@@ -22,6 +22,12 @@ def test_settings_preinclude_model_defaults(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("POECODER_OPENAI_MODELS", raising=False)
 
     settings = get_settings()
+    assert "gpt-5.1" in settings.supported_models
+    assert "gpt-5.3" in settings.supported_models
+    assert "gpt-5.3-codex" in settings.supported_models
+    assert "gpt-5.3-codex-spark" in settings.supported_models
     assert "gpt-5.2-codex" in settings.supported_models
+    assert "openai/gpt-5.3-codex" in settings.supported_models
+    assert "openai/gpt-5.3-codex-spark" in settings.supported_models
     assert "openai/gpt-4.1-mini" in settings.supported_models
     assert "openai/o4-mini" in settings.openai_models

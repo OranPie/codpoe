@@ -7,8 +7,13 @@ from pathlib import Path
 
 DEFAULT_PRESET_MODELS = [
     "assistant",
+    "gpt-5.1",
     "gpt-5.2",
+    "gpt-5.3",
+    "gpt-5.1-codex",
     "gpt-5.2-codex",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
     "gpt-5",
     "claude-sonnet-4.5",
     "claude-opus-4.1",
@@ -17,6 +22,13 @@ DEFAULT_PRESET_MODELS = [
 
 DEFAULT_PRESET_OPENAI_MODELS = [
     "openai/gpt-5",
+    "openai/gpt-5.1",
+    "openai/gpt-5.2",
+    "openai/gpt-5.3",
+    "openai/gpt-5.1-codex",
+    "openai/gpt-5.2-codex",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.3-codex-spark",
     "openai/gpt-5-mini",
     "openai/gpt-4.1",
     "openai/gpt-4.1-mini",
