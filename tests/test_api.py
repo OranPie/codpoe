@@ -236,6 +236,54 @@ def test_auth_status_reports_key_flags(monkeypatch, tmp_path):
     assert payload["catalog"]["openai"]["api_key_configured"] is True
 
 
+def test_auth_secrets_save_invalid_user_key_returns_400(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    monkeypatch.setenv("POECODER_HOME", str(tmp_path / "home"))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    resp = client.post("/auth/secrets/save", json={"user_key": "x"})
+    assert resp.status_code == 400
+    assert "user_key" in str(resp.json().get("detail", ""))
+
+
+def test_auth_secrets_load_missing_file_returns_404(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    monkeypatch.setenv("POECODER_HOME", str(tmp_path / "home"))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    resp = client.post("/auth/secrets/load", json={"user_key": "abcd"})
+    assert resp.status_code == 404
+    assert "secret file not found" in str(resp.json().get("detail", ""))
+
+
+def test_auth_secrets_load_wrong_user_key_returns_400(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    monkeypatch.setenv("POECODER_HOME", str(tmp_path / "home"))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    saved = client.post("/auth/secrets/save", json={"user_key": "right-key"})
+    assert saved.status_code == 200
+
+    loaded = client.post("/auth/secrets/load", json={"user_key": "wrong-key"})
+    assert loaded.status_code == 400
+    assert "invalid user_key" in str(loaded.json().get("detail", ""))
+
+
 def test_tool_set_base_uri(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -430,6 +478,40 @@ def test_turn_repair_retry_for_incomplete_first_reply(monkeypatch, tmp_path):
     assert payload["output_text"] == "done-after-repair"
     assert call_count["n"] == 3
     assert payload["tool_events"][0]["name"] == "GetBalance"
+
+
+def test_turn_injects_runshell_session_id(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    called: dict[str, object] = {}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        if "Tool results:" not in user_prompt:
+            return ModelReply(text='@tool RunShell {"command":"pwd","danger_level":0}', raw={"mock": True})
+        return ModelReply(text="ok", raw={"mock": True})
+
+    async def fake_invoke(self, actor: str, name: str, args: dict):
+        del self
+        called["actor"] = actor
+        called["name"] = name
+        called["args"] = dict(args)
+        return {"stdout": "/tmp", "exit_code": 0}
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+    monkeypatch.setattr(type(api.STATE.tools), "invoke", fake_invoke)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "where am i"})
+    assert resp.status_code == 200
+    assert called["name"] == "RunShell"
+    assert called["args"]["session_id"] == session_id
 
 
 def test_turn_stream_emits_error_event_on_provider_failure(monkeypatch, tmp_path):

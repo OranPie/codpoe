@@ -270,6 +270,8 @@ class TurnService:
             args["session_id"] = session_id
         if name == "StartBackgroundSubAgent" and "parent_session_id" not in args:
             args["parent_session_id"] = session_id
+        if name == "RunShell" and "session_id" not in args:
+            args["session_id"] = session_id
 
     @staticmethod
     def _json_safe_profile(item: dict[str, Any]) -> dict[str, Any]:

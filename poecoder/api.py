@@ -144,14 +144,26 @@ def auth_secrets_save(req: ProviderSecretsSaveRequest) -> dict[str, Any]:
         "poe_api_url": req.poe_api_url or state.settings.poe_api_url,
         "openai_api_url": req.openai_api_url or state.settings.openai_api_url,
     }
-    state.provider_secrets.save(req.user_key, payload)
+    try:
+        state.provider_secrets.save(req.user_key, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to persist secrets: {exc}") from exc
     return {"ok": True, "path": str(state.provider_secrets.path)}
 
 
 @app.post("/auth/secrets/load")
 def auth_secrets_load(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
     state = get_state()
-    payload = state.provider_secrets.load(req.user_key)
+    try:
+        payload = state.provider_secrets.load(req.user_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"secret file not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read secrets: {exc}") from exc
 
     poe_api_key = str(payload.get("poe_api_key", "")).strip() or None
     openai_api_key = str(payload.get("openai_api_key", "")).strip() or None
