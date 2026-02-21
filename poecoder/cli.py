@@ -241,6 +241,42 @@ class PoeCoderCLI:
         else:
             print(self.style.dim(self._t("msg.task_output_pending")))
 
+    def _render_leader_run(self, run: dict[str, Any]) -> None:
+        print(self.style.info(self._t("msg.leader_run_header", id=run.get("id", ""))))
+        rows = [
+            [self._t("table.state"), str(run.get("state", "-"))],
+            [self._t("table.model"), str(run.get("worker_model", "-"))],
+            [self._t("table.created"), self._format_timestamp(run.get("created_at"))],
+            [self._t("table.updated"), self._format_timestamp(run.get("updated_at"))],
+        ]
+        self._print_table([self._t("table.field"), self._t("table.value")], rows)
+        goal = str(run.get("goal", "")).strip()
+        if goal:
+            print(self.style.dim(f"{self._t('table.goal')}: {goal}"))
+        error = run.get("error")
+        if error:
+            print(self.style.error(f"{self._t('table.error')}: {error}"))
+
+    def _render_leader_jobs(self, jobs: list[dict[str, Any]]) -> None:
+        print(self.style.info(self._t("msg.leader_jobs_header", count=len(jobs))))
+        if not jobs:
+            print(self.style.dim(self._t("msg.table_empty")))
+            return
+        rows: list[list[str]] = []
+        for job in jobs:
+            rows.append(
+                [
+                    str(job.get("job_index", "")),
+                    self._shorten(str(job.get("name", "")), 20),
+                    self._shorten(str(job.get("state", "")), 12),
+                    self._shorten(str(job.get("scope", "")), 42),
+                ]
+            )
+        self._print_table(
+            [self._t("table.no"), self._t("table.name"), self._t("table.state"), self._t("table.scope")],
+            rows,
+        )
+
     def _to_image_ref(self, value: str) -> str:
         src = value.strip()
         if src.startswith("http://") or src.startswith("https://") or src.startswith("data:"):
@@ -305,7 +341,11 @@ class PoeCoderCLI:
             print(self.style.ok(self._t("msg.system_updated")))
             return False
         if cmd == "/mode" and len(parts) == 2:
-            target_mode = "planning" if parts[1] == "plan" else parts[1]
+            alias = parts[1].lower()
+            target_mode = "planning" if alias == "plan" else alias
+            if target_mode not in {"coding", "chat", "planning", "leader"}:
+                print(self.style.warn(self._t("msg.invalid_mode", mode=parts[1])))
+                return False
             self.state.mode = target_mode
             if not self.direct:
                 self._ensure_session(self.state.mode)
@@ -610,6 +650,71 @@ class PoeCoderCLI:
             resp.raise_for_status()
             task = resp.json()
             print(self.style.ok(self._t("msg.task_started", id=task["id"])))
+            return False
+        if cmd == "/leader" and len(parts) >= 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.leader_backend_only")))
+                return False
+            goal = raw[len("/leader") :].strip()
+            resp = self.http.post(
+                f"{self.state.backend_url}/leader/start",
+                json={
+                    "session_id": self.state.session_id,
+                    "goal": goal,
+                    "context_keys": [],
+                    "verify_command": None,
+                },
+            )
+            resp.raise_for_status()
+            run = resp.json()
+            print(self.style.ok(self._t("msg.leader_started", id=run.get("id", ""))))
+            self._render_leader_run(run)
+            return False
+        if cmd == "/leaderstatus" and len(parts) == 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.leader_backend_only")))
+                return False
+            run_id = parts[1]
+            resp = self.http.get(f"{self.state.backend_url}/leader/{run_id}")
+            resp.raise_for_status()
+            self._render_leader_run(resp.json())
+            return False
+        if cmd == "/leaderjobs" and len(parts) == 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.leader_backend_only")))
+                return False
+            run_id = parts[1]
+            resp = self.http.get(f"{self.state.backend_url}/leader/{run_id}/jobs")
+            resp.raise_for_status()
+            self._render_leader_jobs(resp.json())
+            return False
+        if cmd == "/leaderwait" and len(parts) in {2, 3}:
+            if self.direct:
+                print(self.style.warn(self._t("msg.leader_backend_only")))
+                return False
+            run_id = parts[1]
+            timeout_s = 120
+            if len(parts) == 3:
+                try:
+                    timeout_s = int(parts[2])
+                except ValueError:
+                    print(self.style.warn(self._t("msg.invalid_number")))
+                    return False
+            resp = self.http.post(
+                f"{self.state.backend_url}/leader/{run_id}/wait",
+                json={"timeout_s": timeout_s},
+            )
+            resp.raise_for_status()
+            self._render_leader_run(resp.json())
+            return False
+        if cmd == "/leadercancel" and len(parts) == 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.leader_backend_only")))
+                return False
+            run_id = parts[1]
+            resp = self.http.post(f"{self.state.backend_url}/leader/{run_id}/cancel")
+            resp.raise_for_status()
+            self._render_leader_run(resp.json())
             return False
         if cmd == "/tasks":
             if self.direct:

@@ -5,10 +5,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-Mode = Literal["coding", "chat", "planning"]
+Mode = Literal["coding", "chat", "planning", "leader"]
 MemoryScope = Literal["session", "project", "global"]
 DangerLevel = Literal[0, 1, 2]
 SubagentState = Literal["running", "completed", "cancelled", "failed"]
+LeaderRunState = Literal["queued", "planning", "running", "completed", "failed", "cancelled"]
 
 
 class SessionCreateRequest(BaseModel):
@@ -259,6 +260,66 @@ class GetWebFileRequest(BaseModel):
     overwrite: bool = False
     timeout_s: int = 60
     max_bytes: int = 20000000
+
+
+
+class LeaderJobSpec(BaseModel):
+    name: str
+    objective: str
+    scope: str
+    owned_paths: list[str] = Field(default_factory=list)
+    context_keys: list[str] = Field(default_factory=list)
+
+
+class LeaderRunRequest(BaseModel):
+    session_id: str
+    goal: str
+    jobs: list[LeaderJobSpec] = Field(default_factory=list)
+    planner_model: str | None = None
+    worker_model: str | None = None
+    max_parallel: int = Field(default=3, ge=1, le=8)
+    per_job_timeout_s: int = Field(default=900, ge=10, le=7200)
+    context_keys: list[str] = Field(default_factory=list)
+    verify_command: str | None = None
+    verify_cwd: str | None = None
+    verify_timeout_s: int = Field(default=300, ge=5, le=3600)
+    verify_danger_level: DangerLevel = 0
+
+
+class LeaderWaitRequest(BaseModel):
+    timeout_s: int = Field(default=120, ge=1, le=7200)
+
+
+class LeaderJobView(BaseModel):
+    id: str
+    run_id: str
+    job_index: int
+    name: str
+    objective: str
+    scope: str
+    owned_paths: list[str] = Field(default_factory=list)
+    context_keys: list[str] = Field(default_factory=list)
+    task_id: str | None = None
+    state: str
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LeaderRunView(BaseModel):
+    id: str
+    session_id: str
+    goal: str
+    planner_model: str
+    worker_model: str
+    state: LeaderRunState
+    plan: dict[str, Any] = Field(default_factory=dict)
+    verify_command: str | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 

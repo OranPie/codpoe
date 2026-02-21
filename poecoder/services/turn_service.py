@@ -213,6 +213,8 @@ class TurnService:
             args["session_id"] = session_id
         if name in {"InstallCommand", "EditCommand", "DelCommand"} and "session_id" not in args:
             args["session_id"] = session_id
+        if name == "StartLeaderRun" and "session_id" not in args:
+            args["session_id"] = session_id
         if name == "StartBackgroundTurn" and "session_id" not in args:
             args["session_id"] = session_id
         if name == "StartBackgroundSubAgent" and "parent_session_id" not in args:

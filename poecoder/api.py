@@ -16,6 +16,8 @@ from poecoder.models import (
     CommandPatchRequest,
     ChangeModelRequest,
     ContextPutRequest,
+    LeaderRunRequest,
+    LeaderWaitRequest,
     ModelProfileUpsertRequest,
     MemoryEditRequest,
     MemoryReadRequest,
@@ -270,6 +272,54 @@ def task_cancel(task_id: str) -> dict[str, Any]:
         return store.cancel(task_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/leader/start")
+async def leader_start(req: LeaderRunRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        return state.leader.start(req).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/leader/{run_id}")
+def leader_read(run_id: str) -> dict[str, Any]:
+    state = get_state()
+    try:
+        return state.leader.read(run_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/leader/{run_id}/jobs")
+def leader_jobs(run_id: str) -> list[dict[str, Any]]:
+    state = get_state()
+    try:
+        return [item.model_dump(mode="json") for item in state.leader.list_jobs(run_id)]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/leader/{run_id}/wait")
+async def leader_wait(run_id: str, req: LeaderWaitRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        return (await state.leader.wait(run_id, timeout_s=req.timeout_s)).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/leader/{run_id}/cancel")
+def leader_cancel(run_id: str) -> dict[str, Any]:
+    state = get_state()
+    try:
+        return state.leader.cancel(run_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
 
 @app.post("/memory/write")
 def memory_write(req: MemoryWriteRequest) -> dict[str, Any]:

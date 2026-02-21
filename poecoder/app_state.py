@@ -9,6 +9,7 @@ from poecoder.policy import PolicyEngine
 from poecoder.router import ModelRouter
 from poecoder.services.audit_service import AuditService
 from poecoder.services.command_service import CommandService
+from poecoder.services.leader_service import LeaderService
 from poecoder.services.memory_service import MemoryService
 from poecoder.services.model_catalog import ModelCatalog
 from poecoder.services.model_clients import PoeModelClient
@@ -44,6 +45,7 @@ class AppState:
     tools: ToolRuntime
     turns: TurnService
     tasks: TaskService
+    leader: LeaderService
 
 
 
@@ -105,7 +107,16 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         model_profiles=model_profiles,
     )
     tasks = TaskService(db=db, turns=turns, subagents=subagents)
+    leader = LeaderService(
+        db=db,
+        sessions=sessions,
+        tasks=tasks,
+        shell=shell,
+        model_client=model_client,
+        model_catalog=model_catalog,
+    )
     tools.task_service = tasks
+    tools.leader_service = leader
     return AppState(
         settings=settings,
         db=db,
@@ -123,4 +134,5 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         tools=tools,
         turns=turns,
         tasks=tasks,
+        leader=leader,
     )

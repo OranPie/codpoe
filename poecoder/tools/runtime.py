@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from poecoder.models import (
+    LeaderRunRequest,
     MemoryEditRequest,
     MemoryReadRequest,
     MemoryWriteRequest,
@@ -27,6 +28,7 @@ from poecoder.tools.code_tools import CodeTools
 from poecoder.tools.web_tools import WebTools
 
 if TYPE_CHECKING:
+    from poecoder.services.leader_service import LeaderService
     from poecoder.services.task_service import TaskService
 
 
@@ -45,6 +47,7 @@ class ToolRuntime:
     usage_service: UsageService
     review_service: ReviewService | None = None
     task_service: "TaskService | None" = None
+    leader_service: "LeaderService | None" = None
 
     def command_catalog(self) -> list[dict[str, Any]]:
         return [
@@ -77,6 +80,11 @@ class ToolRuntime:
             {"name": "ListTasks", "args": "limit?,state?,task_type?", "effect": "List background tasks"},
             {"name": "ReadTaskOutput", "args": "task_id", "effect": "Read task result/error"},
             {"name": "CancelTask", "args": "task_id", "effect": "Cancel background task"},
+            {"name": "StartLeaderRun", "args": "session_id,goal,jobs?,planner_model?,worker_model?,max_parallel?,per_job_timeout_s?,context_keys?,verify_command?,verify_cwd?,verify_timeout_s?,verify_danger_level?", "effect": "Start leader orchestration run"},
+            {"name": "ReadLeaderRun", "args": "run_id", "effect": "Read leader run status/result"},
+            {"name": "ListLeaderJobs", "args": "run_id", "effect": "List jobs under a leader run"},
+            {"name": "WaitLeaderRun", "args": "run_id,timeout_s?", "effect": "Wait for leader run completion"},
+            {"name": "CancelLeaderRun", "args": "run_id", "effect": "Cancel active leader run"},
             {"name": "RunShell", "args": "session_id,command,danger_level,cwd?,timeout_s?", "effect": "Run shell command with policy"},
             {"name": "WikiQuery", "args": "project_id,query,limit?", "effect": "Query project wiki"},
             {"name": "WikiCompact", "args": "project_id", "effect": "Compact wiki docs"},
@@ -232,6 +240,29 @@ class ToolRuntime:
             if self.task_service is None:
                 raise ValueError("task service unavailable")
             return self.task_service.cancel(args["task_id"]).model_dump(mode="json")
+
+        if name == "StartLeaderRun":
+            if self.leader_service is None:
+                raise ValueError("leader service unavailable")
+            run = self.leader_service.start(LeaderRunRequest(**args))
+            return run.model_dump(mode="json")
+        if name == "ReadLeaderRun":
+            if self.leader_service is None:
+                raise ValueError("leader service unavailable")
+            return self.leader_service.read(args["run_id"]).model_dump(mode="json")
+        if name == "ListLeaderJobs":
+            if self.leader_service is None:
+                raise ValueError("leader service unavailable")
+            return [item.model_dump(mode="json") for item in self.leader_service.list_jobs(args["run_id"])]
+        if name == "WaitLeaderRun":
+            if self.leader_service is None:
+                raise ValueError("leader service unavailable")
+            timeout_s = int(args.get("timeout_s", 120))
+            return (await self.leader_service.wait(args["run_id"], timeout_s=timeout_s)).model_dump(mode="json")
+        if name == "CancelLeaderRun":
+            if self.leader_service is None:
+                raise ValueError("leader service unavailable")
+            return self.leader_service.cancel(args["run_id"]).model_dump(mode="json")
 
         if name == "RunShell":
             return (await self.shell_service.run(**args)).model_dump(mode="json")

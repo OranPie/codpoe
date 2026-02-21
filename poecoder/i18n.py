@@ -15,7 +15,7 @@ Commands:
   /help                               Show this help
   /quit                               Exit CLI
   /system <text>                      Set system message
-  /mode <coding|chat|planning>        Start new backend session in mode
+  /mode <coding|chat|planning|leader> Start new backend session in mode
   /plan                               Switch to planning mode + planning system message
   /thinking <quick|balanced|deep> [budget] Update thinking level and budget
   /commandpolicy <allow|deny> [encourage|noencourage] Set model command autonomy
@@ -35,6 +35,11 @@ Commands:
   /subagent <model> <perm> <prompt>   Start subagent
   /bgturn <prompt>                    Start background turn task
   /bgsubagent <model> <perm> <prompt> Start background subagent task
+  /leader <goal>                      Start leader-mode orchestration run
+  /leaderstatus <run_id>              Read leader run status
+  /leaderjobs <run_id>                List leader run jobs
+  /leaderwait <run_id> [timeout]      Wait for leader run
+  /leadercancel <run_id>              Cancel leader run
   /tasks                               List background tasks
   /task <task_id>                      Read task detail
   /readtaskoutput <task_id>            Read task output/result only
@@ -43,6 +48,7 @@ Commands:
 """.strip(),
         "msg.system_updated": "System message updated.",
         "msg.mode_set": "Mode set to {mode}",
+        "msg.invalid_mode": "Invalid mode: {mode}",
         "msg.thinking_updated": "Thinking updated: level={level} budget={budget}",
         "msg.invalid_number": "Invalid number",
         "msg.invalid_thinking_level": "Invalid thinking level: {level}",
@@ -81,6 +87,10 @@ Commands:
         "msg.task_detail": "task {id}",
         "msg.task_output_header": "task output {id} state={state}",
         "msg.task_output_pending": "Task has no output yet.",
+        "msg.leader_backend_only": "Leader mode commands require backend mode.",
+        "msg.leader_started": "Leader run started: {id}",
+        "msg.leader_run_header": "leader run {id}",
+        "msg.leader_jobs_header": "leader jobs ({count})",
         "msg.models_empty": "No models available.",
         "msg.current_model": "current={model}",
         "msg.table_empty": "(empty)",
@@ -101,6 +111,9 @@ Commands:
         "table.payload": "payload",
         "table.result": "result",
         "table.error": "error",
+        "table.goal": "goal",
+        "table.name": "name",
+        "table.scope": "scope",
         "table.image": "image",
         "table.strategy": "strategy",
         "table.speed": "speed",
@@ -127,7 +140,7 @@ Commands:
   /help                               显示帮助
   /quit                               退出 CLI
   /system <text>                      设置系统提示词
-  /mode <coding|chat|planning>        以指定模式创建后端会话
+  /mode <coding|chat|planning|leader> 以指定模式创建后端会话
   /plan                               切换到规划模式并启用规划系统提示词
   /thinking <quick|balanced|deep> [budget] 更新思考等级与预算
   /commandpolicy <allow|deny> [encourage|noencourage] 设置模型命令自治策略
@@ -147,6 +160,11 @@ Commands:
   /subagent <model> <perm> <prompt>   启动子代理
   /bgturn <prompt>                    启动后台轮次任务
   /bgsubagent <model> <perm> <prompt> 启动后台子代理任务
+  /leader <goal>                      启动 leader 编排任务
+  /leaderstatus <run_id>              查看 leader 任务状态
+  /leaderjobs <run_id>                列出 leader 子任务
+  /leaderwait <run_id> [timeout]      等待 leader 任务完成
+  /leadercancel <run_id>              取消 leader 任务
   /tasks                               列出后台任务
   /task <task_id>                      查看任务详情
   /readtaskoutput <task_id>            仅查看任务输出结果
@@ -155,6 +173,7 @@ Commands:
 """.strip(),
         "msg.system_updated": "系统提示词已更新。",
         "msg.mode_set": "模式已切换为 {mode}",
+        "msg.invalid_mode": "无效模式：{mode}",
         "msg.thinking_updated": "思考设置已更新：level={level} budget={budget}",
         "msg.invalid_number": "数字格式无效",
         "msg.invalid_thinking_level": "无效的思考等级：{level}",
@@ -193,6 +212,10 @@ Commands:
         "msg.task_detail": "任务 {id}",
         "msg.task_output_header": "任务输出 {id} 状态={state}",
         "msg.task_output_pending": "任务尚未生成输出。",
+        "msg.leader_backend_only": "Leader 命令仅支持后端模式。",
+        "msg.leader_started": "Leader 任务已启动：{id}",
+        "msg.leader_run_header": "Leader 任务 {id}",
+        "msg.leader_jobs_header": "Leader 子任务（{count}）",
         "msg.models_empty": "没有可用模型。",
         "msg.current_model": "当前模型={model}",
         "msg.table_empty": "（空）",
@@ -213,6 +236,9 @@ Commands:
         "table.payload": "输入",
         "table.result": "结果",
         "table.error": "错误",
+        "table.goal": "目标",
+        "table.name": "名称",
+        "table.scope": "范围",
         "table.image": "图片",
         "table.strategy": "策略",
         "table.speed": "速度",

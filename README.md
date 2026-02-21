@@ -19,7 +19,7 @@ PoeCoder is a Python coding assistant runtime with:
 
 - Storage uses SQLite at `~/.poecoder/poecoder.db` by default.
 - Shell execution is policy-gated by danger level.
-- Context is mode-based: coding clears per turn, chat/planning keeps a short window.
+- Context is mode-based: coding clears per turn, chat/planning/leader keeps a short window.
 
 
 ## Notable CLI Commands
@@ -46,6 +46,9 @@ PoeCoder is a Python coding assistant runtime with:
 - Background tasks: `/bgturn`, `/bgsubagent`, `/tasks`, `/task`, `/canceltask`.
 - Task output shortcuts: `/readtaskoutput <task_id>` and API `GET /tasks/{task_id}/output`.
 - Model tools now support async task orchestration: `StartBackgroundTurn`, `StartBackgroundSubAgent`, `ReadTaskOutput`.
+- Leader orchestration mode: `/mode leader`, `/leader`, `/leaderstatus`, `/leaderjobs`, `/leaderwait`, `/leadercancel`.
+- Leader API endpoints: `/leader/start`, `/leader/{run_id}`, `/leader/{run_id}/jobs`, `/leader/{run_id}/wait`, `/leader/{run_id}/cancel`.
+- Leader mode enforces scoped parallel jobs with explicit ownership and non-interference guidance per subtask.
 - `GET /tools/catalog` exposes the command/tool reference so the model can follow exact command names and args.
 - Context selection is relevance-ranked + compacted by default to reduce token waste while keeping important session context.
 - Turn streaming now uses model chunk streaming for lower latency (`delta` events are emitted as chunks arrive).

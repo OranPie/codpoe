@@ -116,6 +116,43 @@ CREATE TABLE IF NOT EXISTS background_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_background_tasks_state_time ON background_tasks(state, updated_at);
 
+CREATE TABLE IF NOT EXISTS leader_runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    planner_model TEXT NOT NULL,
+    worker_model TEXT NOT NULL,
+    state TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    verify_command TEXT,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leader_runs_state_time ON leader_runs(state, updated_at);
+
+CREATE TABLE IF NOT EXISTS leader_jobs (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    job_index INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    owned_paths_json TEXT NOT NULL,
+    context_keys_json TEXT NOT NULL,
+    task_id TEXT,
+    state TEXT NOT NULL,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leader_jobs_run_idx ON leader_jobs(run_id, job_index);
+CREATE INDEX IF NOT EXISTS idx_leader_jobs_state_time ON leader_jobs(state, updated_at);
+
 CREATE TABLE IF NOT EXISTS model_profiles (
     model TEXT PRIMARY KEY,
     strategy TEXT NOT NULL,

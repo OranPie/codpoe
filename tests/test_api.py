@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import asyncio
 
 from fastapi.testclient import TestClient
 
@@ -397,6 +398,156 @@ def test_planning_mode_uses_plan_system_message(monkeypatch, tmp_path):
     assert captured["system_message"].startswith(PLAN_SYSTEM_MESSAGE)
 
 
+def test_leader_mode_uses_leader_system_message(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.prompts import LEADER_SYSTEM_MESSAGE
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    captured: dict[str, str] = {}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        captured["system_message"] = system_message
+        return ModelReply(text="ok", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_resp = client.post("/sessions", json={"mode": "leader", "project_id": "demo"})
+    session_id = session_resp.json()["id"]
+    turn = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "coordinate this"})
+    assert turn.status_code == 200
+    assert captured["system_message"].startswith(LEADER_SYSTEM_MESSAGE)
+
+
+def test_leader_run_lifecycle_with_scoped_jobs(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.models import TurnResult
+
+    api.STATE = api.build_app_state(tmp_path)
+    captured: list[dict[str, object]] = []
+
+    async def fake_execute(self, req):
+        captured.append(
+            {
+                "system_message": req.system_message,
+                "metadata": req.metadata,
+                "user_prompt": req.user_prompt,
+            }
+        )
+        return TurnResult(
+            session_id=req.session_id,
+            model="assistant",
+            output_text=f"done-{req.metadata.get('leader_job_id', 'x')}",
+            tool_events=[],
+        )
+
+    monkeypatch.setattr(type(api.STATE.turns), "execute", fake_execute)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    started = client.post(
+        "/leader/start",
+        json={
+            "session_id": session_id,
+            "goal": "implement two isolated updates",
+            "jobs": [
+                {
+                    "name": "api",
+                    "objective": "update api",
+                    "scope": "api only",
+                    "owned_paths": ["poecoder/api.py"],
+                    "context_keys": [],
+                },
+                {
+                    "name": "cli",
+                    "objective": "update cli",
+                    "scope": "cli only",
+                    "owned_paths": ["poecoder/cli.py"],
+                    "context_keys": [],
+                },
+            ],
+            "max_parallel": 2,
+        },
+    )
+    assert started.status_code == 200
+    run_id = started.json()["id"]
+
+    waited = client.post(f"/leader/{run_id}/wait", json={"timeout_s": 5})
+    assert waited.status_code == 200
+    assert waited.json()["state"] == "completed"
+
+    jobs = client.get(f"/leader/{run_id}/jobs")
+    assert jobs.status_code == 200
+    rows = jobs.json()
+    assert len(rows) == 2
+    assert all(item["state"] == "completed" for item in rows)
+
+    assert len(captured) == 2
+    for entry in captured:
+        metadata = entry["metadata"]
+        assert metadata["isolation_rule"] == "do-not-touch-outside-owned-paths"
+        assert "Owned scope:" in str(entry["system_message"])
+
+
+def test_leader_run_cancel(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.models import TurnResult
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def slow_execute(self, req):
+        await asyncio.sleep(0.5)
+        return TurnResult(
+            session_id=req.session_id,
+            model="assistant",
+            output_text="slow",
+            tool_events=[],
+        )
+
+    monkeypatch.setattr(type(api.STATE.turns), "execute", slow_execute)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    started = client.post(
+        "/leader/start",
+        json={
+            "session_id": session_id,
+            "goal": "slow run",
+            "jobs": [
+                {
+                    "name": "one",
+                    "objective": "slow",
+                    "scope": "single",
+                    "owned_paths": ["poecoder/services"],
+                    "context_keys": [],
+                }
+            ],
+        },
+    )
+    run_id = started.json()["id"]
+    cancelled = client.post(f"/leader/{run_id}/cancel")
+    assert cancelled.status_code == 200
+    state = cancelled.json()["state"]
+    for _ in range(40):
+        if state == "cancelled":
+            break
+        snapshot = client.get(f"/leader/{run_id}")
+        assert snapshot.status_code == 200
+        state = snapshot.json()["state"]
+        time.sleep(0.02)
+    assert state == "cancelled"
+
+
 def test_session_thinking_update(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -578,3 +729,4 @@ def test_model_table_endpoints(monkeypatch, tmp_path):
     names = {item["name"] for item in catalog.json()}
     assert "Review" in names
     assert "ReadTaskOutput" in names
+    assert "StartLeaderRun" in names
