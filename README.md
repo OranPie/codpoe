@@ -11,6 +11,7 @@ PoeCoder is a Python coding assistant runtime with:
 
 - `v0.1.1` is now **unsuggested** due to known performance issues, higher token/cost overhead, and stability problems.
 - Use `v0.1.2+` for improved turn stability, context efficiency, and tool-response handling.
+- Docs index: `docs/README.md`
 
 ## Quick start
 

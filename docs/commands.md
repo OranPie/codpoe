@@ -1,79 +1,150 @@
-# PoeCoder Command Surface
+# PoeCoder Tool Command Surface
 
-This document lists model/user command names with compact argument and effect notes.
+This document lists model-callable tools from the runtime command catalog with compact argument/effect notes.
+
+## File and code tools
 
 - ReadRaw
-  - args: file, line, end_line
-  - effect: returns raw file text window
+  - args: `file,line,end_line?`
+  - effect: return raw file text by line window
 - ReadStruct
-  - args: target, language, dependency_depth
-  - effect: returns AST/structure summary and dependency links
+  - args: `target,language,dependency_depth`
+  - effect: return structural/AST summary and dependencies
 - ReadRecursive (alias: ReadRecurisive)
-  - args: seed_files, boundary
-  - effect: expands implementation graph through imports
+  - args: `seed_files,boundary`
+  - effect: recursively expand related implementation files
 - Search
-  - args: pattern, file_pattern, boundary, root
-  - effect: regex match results with local context lines
+  - args: `pattern,file_pattern,boundary,root`
+  - effect: regex matches with context snippets
+- ListFile
+  - args: `path?,pattern?,recursive?,include_dirs?,limit?`
+  - effect: list files/dirs under a path
+- ChangeWorkDir
+  - args: `path`
+  - effect: switch tool runtime working directory
 - WriteRaw
-  - args: file, line, content, append
-  - effect: line insert/append write to file
+  - args: `file,line,content,append?`
+  - effect: insert/append text at target file location
 - WriteReplace
-  - args: pattern, replacement, location, max_changes
-  - effect: regex replacement over scoped files
+  - args: `pattern,replacement,location,max_changes`
+  - effect: regex replace in scoped files
+
+## Web tools
+
 - GetWebRaw
-  - args: url, timeout_s, max_chars, headers
-  - effect: fetches raw HTML/text payload from a URL
+  - args: `url,timeout_s,max_chars,headers?`
+  - effect: fetch raw web payload
 - GetWeb
-  - args: url, focus, timeout_s, max_chars
-  - effect: returns compact web extraction for agent reasoning/synthesis
+  - args: `url,focus?,timeout_s,max_chars`
+  - effect: fetch and summarize a page for reasoning
 - GetWebFile
-  - args: url, save_as, folder, overwrite, timeout_s, max_bytes
-  - effect: downloads remote file into local managed download folder
-- TmpWrite
-  - args: name, content, ttl_seconds
-  - effect: stores temporary artifact with expiration
+  - args: `url,save_as?,folder,overwrite,timeout_s,max_bytes`
+  - effect: download remote file
+
+## Memory and wiki
+
 - WriteMemory
-  - args: scope, content, tags, priority, session_id, project_id
-  - effect: creates memory entry
+  - args: `scope,content,tags?,priority,session_id?,project_id?`
+  - effect: create memory entry
 - ReadMemory
-  - args: query, scope, session_id, project_id, limit
-  - effect: returns matching memory entries
+  - args: `scope?,query?,session_id?,project_id?,tags_any?,min_priority?,include_content?,max_content_chars?,limit`
+  - effect: read filtered memory entries
 - EditMemory
-  - args: entry_id or query, operation, payload, scope
-  - effect: updates memory content
+  - args: `entry_id?/query,operation,payload,scope?`
+  - effect: mutate memory entries
 - DelMemory
-  - args: entry_id or query, scope
-  - effect: deletes matching memory entries
+  - args: `entry_id?/query,scope?`
+  - effect: delete memory entries
+- WikiQuery
+  - args: `project_id,query,topic?,include_content?,include_meta?,max_content_chars?,limit?`
+  - effect: query project wiki with optional compact output
+- WikiCompact
+  - args: `project_id`
+  - effect: compact wiki documents
+
+## Command registry and temp artifacts
+
+- TmpWrite
+  - args: `name,content,ttl_seconds?`
+  - effect: save temporary named content
 - InstallCommand
-  - args: name, definition, runtime, args_schema, effect_schema, capabilities, source, signature
-  - effect: installs/updates command registry entry
+  - args: `name,definition,runtime,args_schema,effect_schema,capabilities,source,signature?,session_id?`
+  - effect: install/update reusable command
 - EditCommand
-  - args: name and patch fields
-  - effect: updates installed command definition
+  - args: `name,definition?/args_schema?/effect_schema?/capabilities?/signature?,session_id?`
+  - effect: patch installed command
 - DelCommand
-  - args: name
-  - effect: deletes installed command definition
-- GetBalance
-  - args: optional refresh
-  - effect: fetches current Poe point balance from usage API
+  - args: `name,session_id?`
+  - effect: delete installed command
+
+## Models, review, and providers
+
 - ListModels
-  - args: none
-  - effect: lists allowed model names for main/subagent use
+  - args: `refresh?`
+  - effect: list supported models
 - ChangeModel
-  - args: model, optional session_id
-  - effect: changes active main model for the session
+  - args: `session_id,model`
+  - effect: change active model for a session
+- Review
+  - args: `session_id,prompt,context_keys?,model?,thinking_level?,thinking_budget?`
+  - effect: run reviewer-role analysis
+- GetBalance
+  - args: none
+  - effect: read Poe points balance
+- SetBaseUri
+  - args: `provider,base_uri`
+  - effect: set model provider base URI (`poe` or `openai`)
+
+## Subagents and background tasks
+
 - StartSubAgent
-  - args: parent_session_id, model, perm, prompt, context_share, system_message_modifier
-  - effect: starts subagent task with optional subagent system-message modifier
+  - args: `parent_session_id,model,perm,prompt,context_share,images?,system_message_modifier?`
+  - effect: start subagent
 - ReadSubAgent
-  - args: agent_id
-  - effect: returns current subagent state/result
+  - args: `agent_id`
+  - effect: read subagent state
 - WaitSubAgent
-  - args: agent_id, timeout_s
-  - effect: waits for subagent completion window
+  - args: `agent_id,timeout_s?`
+  - effect: wait for subagent completion
 - CancelSubAgent
-  - args: agent_id
-  - effect: cancels running subagent
+  - args: `agent_id`
+  - effect: cancel subagent
+- StartBackgroundTurn
+  - args: `session_id,user_prompt,system_message?,images?,context_keys?,metadata?`
+  - effect: launch async turn task
+- StartBackgroundSubAgent
+  - args: `parent_session_id,model,perm,prompt,images?,context_share?,system_message_modifier?,wait_timeout_s?`
+  - effect: launch async subagent task
+- ListTasks
+  - args: `limit?,state?,task_type?`
+  - effect: list background tasks
+- ReadTaskOutput
+  - args: `task_id`
+  - effect: read background task output
+- CancelTask
+  - args: `task_id`
+  - effect: cancel background task
+
+## Leader orchestration and shell
+
+- StartLeaderRun
+  - args: `session_id,goal,jobs?,planner_model?,worker_model?,max_parallel?,per_job_timeout_s?,context_keys?,verify_command?,verify_cwd?,verify_timeout_s?,verify_danger_level?`
+  - effect: start scoped parallel leader run
+- ReadLeaderRun
+  - args: `run_id`
+  - effect: read leader run status and result
+- ListLeaderJobs
+  - args: `run_id`
+  - effect: list jobs for a leader run
+- WaitLeaderRun
+  - args: `run_id,timeout_s?`
+  - effect: wait for leader run completion
+- CancelLeaderRun
+  - args: `run_id`
+  - effect: cancel leader run
 - RunShell
-  - args: session_id, command, danger_level, cwd, timeout_s
-  - effect: executes shell under policy gate and returns output
+  - args: `session_id,command,danger_level,cwd?,timeout_s?`
+  - effect: execute shell command through policy gate
+- Exit
+  - args: `reason?`
+  - effect: signal CLI/session exit
