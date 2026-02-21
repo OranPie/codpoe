@@ -21,28 +21,53 @@ class WikiService:
         )
         return int(cur.lastrowid)
 
-    def query(self, project_id: str, query: str, limit: int = 10) -> list[dict[str, object]]:
+    def query(
+        self,
+        project_id: str,
+        query: str,
+        limit: int = 10,
+        topic: str | None = None,
+        include_content: bool = True,
+        include_meta: bool = True,
+        max_content_chars: int | None = None,
+    ) -> list[dict[str, object]]:
         pattern = f"%{query}%"
+        clauses = ["project_id = ?", "(topic LIKE ? OR content LIKE ?)"]
+        params: list[object] = [project_id, pattern, pattern]
+        if topic:
+            clauses.append("topic LIKE ?")
+            params.append(f"%{topic}%")
+        params.append(limit)
         rows = self.db.query_all(
-            """
+            f"""
             SELECT * FROM wiki_docs
-            WHERE project_id = ? AND (topic LIKE ? OR content LIKE ?)
+            WHERE {' AND '.join(clauses)}
             ORDER BY updated_at DESC
             LIMIT ?
             """,
-            (project_id, pattern, pattern, limit),
+            tuple(params),
         )
         results: list[dict[str, object]] = []
         for row in rows:
+            content = str(row["content"])
+            if max_content_chars is not None and len(content) > max_content_chars:
+                cap = max(int(max_content_chars), 1)
+                if cap <= 3:
+                    content = content[:cap]
+                else:
+                    content = content[: cap - 3] + "..."
+            payload: dict[str, object] = {
+                "id": row["id"],
+                "project_id": row["project_id"],
+                "topic": row["topic"],
+                "compacted_at": row["compacted_at"],
+            }
+            if include_content:
+                payload["content"] = content
+            if include_meta:
+                payload["meta"] = loads(row["meta_json"])
             results.append(
-                {
-                    "id": row["id"],
-                    "project_id": row["project_id"],
-                    "topic": row["topic"],
-                    "content": row["content"],
-                    "meta": loads(row["meta_json"]),
-                    "compacted_at": row["compacted_at"],
-                }
+                payload
             )
         return results
 

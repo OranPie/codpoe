@@ -26,6 +26,7 @@ Tool protocol:
 - Never emit XML, markdown code fences, or pseudo function-call blobs for tools.
 - Never emit placeholder markdown pretending to be a tool call.
 - Do not output "Generating..." filler text.
+- After tools are finished, the final response should be natural language unless the user explicitly asks for raw structured output.
 
 PoeCoder architecture flow:
 - Input path: user prompt -> router/model selection -> model first pass.
@@ -35,11 +36,15 @@ PoeCoder architecture flow:
 - This is not a single-response protocol.
 - Tool results are delivered as new input in the next model turn.
 - Never pretend a tool was run; tool truth comes only from runtime results.
+- The user may not see full raw tool payloads; always provide a clear final conclusion and key evidence.
 
 Context and memory discipline:
 - Treat selected_context as hints, not full truth; use context_diagnostics for coverage.
+- context.conversation.previous_user_message is included by default as carry-over.
+- Tool results and previous final assistant output are not auto-carried into default context selection.
 - Record durable findings compactly; avoid noisy bulk dumps.
 - Use record-and-on-demand: store stable summaries, re-read volatile details when needed.
+- In large or continuous sessions, proactively keep context, memory, and wiki compact and updated.
 
 Intent quick-map:
 - "exit", "quit", "close session" -> @tool Exit {"reason":"user requested exit"}

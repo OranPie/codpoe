@@ -29,6 +29,7 @@ Commands:
   /plan                               Switch to planning mode + planning system message
   /thinking <quick|balanced|deep> [budget] Update thinking level and budget
   /thinkdetails <on|off>              Toggle verbose thinking/progress details in model output
+  /toolresult <auto|compact|full>     Control how large tool results are forwarded to model
   /commandpolicy <allow|deny> [encourage|noencourage] Set model command autonomy
   /lang <en|zh-cn>                    Switch CLI language
   /image <path|url>                   Attach one image for next model/subagent request
@@ -89,6 +90,8 @@ Commands:
         "msg.thinking_updated": "Thinking updated: level={level} budget={budget}",
         "msg.think_details_updated": "Think details output={value}",
         "msg.think_details_usage": "Usage: /thinkdetails <on|off>",
+        "msg.tool_result_mode_updated": "Tool result forwarding mode={mode}",
+        "msg.tool_result_mode_usage": "Usage: /toolresult <auto|compact|full>",
         "msg.invalid_number": "Invalid number",
         "msg.invalid_thinking_level": "Invalid thinking level: {level}",
         "msg.command_policy_updated": "Command policy updated: allow={allow} encourage={encourage}",
@@ -200,6 +203,7 @@ Commands:
   /plan                               切换到规划模式并启用规划系统提示词
   /thinking <quick|balanced|deep> [budget] 更新思考等级与预算
   /thinkdetails <on|off>              切换模型输出中的思考/进度细节显示
+  /toolresult <auto|compact|full>     控制大型工具结果如何传给模型
   /commandpolicy <allow|deny> [encourage|noencourage] 设置模型命令自治策略
   /lang <en|zh-cn>                    切换 CLI 语言
   /image <path|url>                   为下一次模型/子代理请求添加一张图片
@@ -260,6 +264,8 @@ Commands:
         "msg.thinking_updated": "思考设置已更新：level={level} budget={budget}",
         "msg.think_details_updated": "思考细节输出={value}",
         "msg.think_details_usage": "用法：/thinkdetails <on|off>",
+        "msg.tool_result_mode_updated": "工具结果转发模式={mode}",
+        "msg.tool_result_mode_usage": "用法：/toolresult <auto|compact|full>",
         "msg.invalid_number": "数字格式无效",
         "msg.invalid_thinking_level": "无效的思考等级：{level}",
         "msg.command_policy_updated": "命令策略已更新：allow={allow} encourage={encourage}",

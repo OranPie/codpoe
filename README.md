@@ -7,6 +7,11 @@ PoeCoder is a Python coding assistant runtime with:
 - A CLI with Codex-like turn loop and streaming output.
 - Dual model path: backend-proxy model calls or direct model calls from CLI.
 
+## Release advisory
+
+- `v0.1.1` is now **unsuggested** due to known performance issues, higher token/cost overhead, and stability problems.
+- Use `v0.1.2+` for improved turn stability, context efficiency, and tool-response handling.
+
 ## Quick start
 
 1. Install dependencies:

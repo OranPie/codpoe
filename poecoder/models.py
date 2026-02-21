@@ -102,6 +102,7 @@ class TurnResult(BaseModel):
     model: str
     output_text: str
     tool_events: list[dict[str, Any]] = Field(default_factory=list)
+    usage: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryWriteRequest(BaseModel):
@@ -126,6 +127,10 @@ class MemoryReadRequest(BaseModel):
     scope: MemoryScope | None = None
     session_id: str | None = None
     project_id: str | None = None
+    tags_any: list[str] = Field(default_factory=list)
+    min_priority: int | None = None
+    include_content: bool = True
+    max_content_chars: int | None = Field(default=None, ge=1)
     limit: int = 20
 
 
@@ -151,6 +156,10 @@ class WikiIngestRequest(BaseModel):
 class WikiQueryRequest(BaseModel):
     project_id: str
     query: str
+    topic: str | None = None
+    include_content: bool = True
+    include_meta: bool = True
+    max_content_chars: int | None = Field(default=None, ge=1)
     limit: int = 10
 
 

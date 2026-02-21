@@ -180,8 +180,7 @@ class PoeModelClient:
             "No POE API key configured; returning local mock response.",
             f"System length={len(system_message)} user length={len(user_prompt)} context_keys={list(context.keys())}",
             f"Image count={len(images)}",
-            "If you want tool execution, emit lines like:",
-            "@tool Search {\"pattern\":\"TODO\",\"file_pattern\":\"*.py\"}",
+            "Tool execution is disabled in mock mode.",
         ]
         return ModelReply(text="\n".join(lines), raw={"mock": True})
 
@@ -295,7 +294,11 @@ class PoeModelClient:
                 response,
                 include_thinking=self._should_include_thinking(context),
             )
-            return ModelReply(text=text, raw={"provider": "openai"})
+            raw: dict[str, Any] = {"provider": "openai"}
+            usage = self._extract_openai_usage(response)
+            if usage:
+                raw["usage"] = usage
+            return ModelReply(text=text, raw=raw)
         except Exception as exc:  # noqa: BLE001
             raise self._translate_openai_error(model, exc) from exc
 
@@ -426,6 +429,31 @@ class PoeModelClient:
         if text_out:
             return f"[thinking]\n{thinking}\n\n{text_out}"
         return f"[thinking]\n{thinking}"
+
+    @staticmethod
+    def _extract_openai_usage(response: Any) -> dict[str, int]:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        if isinstance(usage, dict):
+            prompt = int(usage.get("prompt_tokens", 0) or 0)
+            completion = int(usage.get("completion_tokens", 0) or 0)
+            total = int(usage.get("total_tokens", prompt + completion) or (prompt + completion))
+            return {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": total,
+            }
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        total = int(getattr(usage, "total_tokens", prompt + completion) or (prompt + completion))
+        if prompt == 0 and completion == 0 and total == 0:
+            return {}
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        }
 
     @staticmethod
     def _extract_text_part(part: Any) -> str:

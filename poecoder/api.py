@@ -64,7 +64,7 @@ def get_state() -> AppState:
     return STATE
 
 
-app = FastAPI(title="PoeCoder API", version="0.1.1")
+app = FastAPI(title="PoeCoder API", version="0.1.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -539,7 +539,15 @@ def wiki_ingest(req: WikiIngestRequest) -> dict[str, Any]:
 @app.post("/wiki/query")
 def wiki_query(req: WikiQueryRequest) -> list[dict[str, Any]]:
     state = get_state()
-    return state.wiki.query(req.project_id, req.query, req.limit)
+    return state.wiki.query(
+        project_id=req.project_id,
+        query=req.query,
+        limit=req.limit,
+        topic=req.topic,
+        include_content=req.include_content,
+        include_meta=req.include_meta,
+        max_content_chars=req.max_content_chars,
+    )
 
 
 @app.post("/wiki/compact")

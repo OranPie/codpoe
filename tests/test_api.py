@@ -106,6 +106,143 @@ def test_tool_read_raw_endpoint(monkeypatch, tmp_path):
     assert "b" in resp.json()["content"]
 
 
+def test_memory_read_filters(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+
+    client.post(
+        "/memory/write",
+        json={
+            "scope": "session",
+            "session_id": session_id,
+            "project_id": "demo",
+            "content": "alpha-important-very-long",
+            "tags": ["keep", "note"],
+            "priority": 3,
+        },
+    )
+    client.post(
+        "/memory/write",
+        json={
+            "scope": "session",
+            "session_id": session_id,
+            "project_id": "demo",
+            "content": "beta-ignore",
+            "tags": ["drop"],
+            "priority": 5,
+        },
+    )
+
+    filtered = client.post(
+        "/memory/read",
+        json={
+            "scope": "session",
+            "session_id": session_id,
+            "tags_any": ["keep"],
+            "min_priority": 2,
+            "limit": 10,
+        },
+    )
+    assert filtered.status_code == 200
+    rows = filtered.json()
+    assert len(rows) == 1
+    assert rows[0]["content"].startswith("alpha-")
+
+    hidden = client.post(
+        "/memory/read",
+        json={
+            "scope": "session",
+            "session_id": session_id,
+            "tags_any": ["keep"],
+            "include_content": False,
+            "limit": 10,
+        },
+    )
+    assert hidden.status_code == 200
+    assert hidden.json()[0]["content"] == ""
+
+    clipped = client.post(
+        "/memory/read",
+        json={
+            "scope": "session",
+            "session_id": session_id,
+            "tags_any": ["keep"],
+            "max_content_chars": 8,
+            "limit": 10,
+        },
+    )
+    assert clipped.status_code == 200
+    assert clipped.json()[0]["content"] == "alpha..."
+
+
+def test_wiki_query_filters(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+
+    a = client.post(
+        "/wiki/ingest",
+        json={
+            "project_id": "demo",
+            "topic": "database tuning",
+            "content": "Use index hints and analyze query plans frequently.",
+            "source": "test",
+        },
+    )
+    b = client.post(
+        "/wiki/ingest",
+        json={
+            "project_id": "demo",
+            "topic": "frontend notes",
+            "content": "Use shared tokens for consistent spacing.",
+            "source": "test",
+        },
+    )
+    assert a.status_code == 200
+    assert b.status_code == 200
+
+    filtered = client.post(
+        "/wiki/query",
+        json={
+            "project_id": "demo",
+            "query": "use",
+            "topic": "database",
+            "include_meta": False,
+            "include_content": False,
+            "limit": 10,
+        },
+    )
+    assert filtered.status_code == 200
+    rows = filtered.json()
+    assert len(rows) == 1
+    assert rows[0]["topic"] == "database tuning"
+    assert "content" not in rows[0]
+    assert "meta" not in rows[0]
+
+    clipped = client.post(
+        "/wiki/query",
+        json={
+            "project_id": "demo",
+            "query": "use",
+            "topic": "database",
+            "max_content_chars": 12,
+            "limit": 10,
+        },
+    )
+    assert clipped.status_code == 200
+    assert clipped.json()[0]["content"] == "Use index..."
+
+
 def test_tool_listfile_changeworkdir_and_exit(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -375,12 +512,17 @@ def test_turn_model_tool_communication(monkeypatch, tmp_path):
         call_count["n"] += 1
         if call_count["n"] == 1:
             assert context["turn_protocol"]["phase"] == "tool_or_answer"
+            assert "command_catalog" in context
+            assert "model_table" not in context
             return ModelReply(text='@tool GetBalance {}', raw={"mock": True})
         assert "Tool results:" in user_prompt
         assert "current_point_balance" in user_prompt
         assert "final-response turn" in user_prompt
         assert context["turn_protocol"]["phase"] == "final_response"
         assert context["turn_protocol"]["tool_events_count"] == 1
+        assert "command_catalog" in context
+        assert "model_table" not in context
+        assert "memory" in context
         return ModelReply(text="balance checked", raw={"mock": True})
 
     monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
@@ -403,6 +545,8 @@ def test_turn_model_tool_communication(monkeypatch, tmp_path):
     assert len(payload["tool_events"]) == 1
     assert payload["tool_events"][0]["name"] == "GetBalance"
     assert payload["tool_events"][0]["result"]["current_point_balance"] == 321
+    assert "usage" in payload
+    assert payload["usage"]["estimated_tokens"]["total"] > 0
 
 
 def test_turn_execute_maps_provider_errors(monkeypatch, tmp_path):
@@ -478,6 +622,97 @@ def test_turn_repair_retry_for_incomplete_first_reply(monkeypatch, tmp_path):
     assert payload["output_text"] == "done-after-repair"
     assert call_count["n"] == 3
     assert payload["tool_events"][0]["name"] == "GetBalance"
+
+
+def test_turn_handles_multiple_tool_rounds_before_final_answer(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    call_count = {"n": 0}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return ModelReply(text='@tool ListFile {"path":".","pattern":"*","recursive":false}', raw={"mock": True})
+        if call_count["n"] == 2:
+            return ModelReply(text='@tool RunShell {"command":"pwd","danger_level":0}', raw={"mock": True})
+        return ModelReply(text="Done. Current directory checked.", raw={"mock": True})
+
+    async def fake_invoke(self, actor: str, name: str, args: dict):
+        del self, actor
+        if name == "ListFile":
+            return {"entries": ["a.txt"]}
+        return {"stdout": "/tmp", "exit_code": 0}
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+    monkeypatch.setattr(type(api.STATE.tools), "invoke", fake_invoke)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    turn_resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "check cwd and files"})
+    assert turn_resp.status_code == 200
+    payload = turn_resp.json()
+    assert payload["output_text"].startswith("Done.")
+    assert len(payload["tool_events"]) == 2
+    assert payload["tool_events"][0]["name"] == "ListFile"
+    assert payload["tool_events"][1]["name"] == "RunShell"
+    assert payload["usage"]["estimated_tokens"]["total"] > 0
+
+
+def test_turn_context_does_not_include_model_table(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    many_models = [f"openai/gpt-4.1-variant-{i}" for i in range(120)]
+    monkeypatch.setattr(type(api.STATE.model_catalog), "list_models", lambda self, refresh=False: many_models)
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        assert "model_table" not in context
+        assert "model_table_meta" not in context
+        return ModelReply(text="ok", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "hello"})
+    assert resp.status_code == 200
+    assert resp.json()["output_text"] == "ok"
+
+
+def test_turn_stops_repeated_tool_call_loops(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    calls = {"n": 0}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        calls["n"] += 1
+        return ModelReply(text='@tool GetBalance {}', raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+    monkeypatch.setattr(type(api.STATE.usage), "get_current_balance", lambda self: {"current_point_balance": 1})
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "loop test"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "repeated tool-call loop" in payload["output_text"]
+    assert calls["n"] == 3
+    assert len(payload["tool_events"]) == 2
 
 
 def test_turn_injects_runshell_session_id(monkeypatch, tmp_path):

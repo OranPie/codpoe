@@ -38,6 +38,7 @@ class CliState:
     project_id: str = "default"
     local_context: dict[str, Any] = field(default_factory=dict)
     pending_images: list[str] = field(default_factory=list)
+    tool_result_mode: str = "auto"
 
 
 class Style:
@@ -94,6 +95,8 @@ class PoeCoderCLI:
         )
         self.style = Style()
         self.i18n = Translator(lang=normalize_lang(lang or self.settings.lang))
+        self.tool_preview_max_chars = 480
+        self.tool_preview_max_lines = 10
 
     def _t(self, key: str, **kwargs: Any) -> str:
         return self.i18n.t(key, **kwargs)
@@ -445,6 +448,165 @@ class PoeCoderCLI:
                 )
             )
         )
+
+    @staticmethod
+    def _estimate_tokens_from_text(text: str) -> int:
+        clean = (text or "").strip()
+        if not clean:
+            return 0
+        return max(1, int(len(clean) / 4))
+
+    def _build_tool_result_preview(self, result: Any) -> str:
+        try:
+            text = json.dumps(result, ensure_ascii=True, indent=2)
+        except Exception:  # noqa: BLE001
+            text = repr(result)
+        lines = text.splitlines()
+        capped_lines = lines[: self.tool_preview_max_lines]
+        preview = "\n".join(capped_lines)
+        truncated = len(lines) > self.tool_preview_max_lines or len(text) > self.tool_preview_max_chars
+        if len(preview) > self.tool_preview_max_chars:
+            preview = preview[: self.tool_preview_max_chars]
+            truncated = True
+        if truncated:
+            remaining = max(0, len(text) - len(preview))
+            preview += f"\n... (preview truncated, {remaining} more chars)"
+        return preview
+
+    def _render_tool_event(self, event: dict[str, Any], index: int) -> None:
+        name = str(event.get("name", "tool"))
+        args = event.get("args", {})
+        result = event.get("result")
+        try:
+            args_json = json.dumps(args, ensure_ascii=True, sort_keys=True)
+        except Exception:  # noqa: BLE001
+            args_json = repr(args)
+        try:
+            result_json = json.dumps(result, ensure_ascii=True)
+        except Exception:  # noqa: BLE001
+            result_json = repr(result)
+
+        call_tokens = self._estimate_tokens_from_text(f"{name} {args_json}")
+        result_tokens = self._estimate_tokens_from_text(result_json)
+        total_tokens = call_tokens + result_tokens
+
+        print(self.style.info(f"tool#{index} {name} tokens(call={call_tokens}, result={result_tokens}, total={total_tokens})"))
+        print(self.style.dim("  args=" + args_json))
+        preview = self._build_tool_result_preview(result)
+        for line in preview.splitlines():
+            print(self.style.dim("  result> " + line))
+
+    def _render_token_breakdown(self, payload: dict[str, Any]) -> None:
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return
+        estimated = usage.get("estimated_tokens")
+        if isinstance(estimated, dict):
+            total_in = int(estimated.get("input_total", 0) or 0)
+            total_out = int(estimated.get("output_total", 0) or 0)
+            total = int(estimated.get("total", total_in + total_out) or (total_in + total_out))
+            print(self.style.dim(f"token breakdown (estimated): in={total_in} out={total_out} total={total}"))
+            stages = estimated.get("stages", [])
+            if isinstance(stages, list):
+                for item in stages:
+                    if not isinstance(item, dict):
+                        continue
+                    stage = int(item.get("stage", 0) or 0)
+                    phase = str(item.get("phase", "unknown"))
+                    inp = item.get("input", {})
+                    out = item.get("output", {})
+                    if not isinstance(inp, dict) or not isinstance(out, dict):
+                        continue
+                    print(
+                        self.style.dim(
+                            "  "
+                            + f"stage#{stage} {phase}: "
+                            + f"in(total={int(inp.get('total', 0) or 0)},"
+                            + f"system={int(inp.get('system', 0) or 0)},"
+                            + f"user={int(inp.get('user_prompt', 0) or 0)},"
+                            + f"context={int(inp.get('context', 0) or 0)},"
+                            + f"images={int(inp.get('images', 0) or 0)}) "
+                            + f"out(total={int(out.get('total', 0) or 0)})"
+                        )
+                    )
+        provider = usage.get("provider_usage")
+        if isinstance(provider, dict):
+            prompt_t = int(provider.get("prompt_tokens", 0) or 0)
+            comp_t = int(provider.get("completion_tokens", 0) or 0)
+            total_t = int(provider.get("total_tokens", prompt_t + comp_t) or (prompt_t + comp_t))
+            if prompt_t or comp_t or total_t:
+                print(self.style.dim(f"token breakdown (provider): in={prompt_t} out={comp_t} total={total_t}"))
+            stages = provider.get("stages", [])
+            if isinstance(stages, list):
+                for item in stages:
+                    if not isinstance(item, dict):
+                        continue
+                    stage = int(item.get("stage", 0) or 0)
+                    phase = str(item.get("phase", "unknown"))
+                    provider_name = str(item.get("provider", "unknown"))
+                    source = str(item.get("source", "unknown"))
+                    print(
+                        self.style.dim(
+                            "  "
+                            + f"stage#{stage} {phase}: "
+                            + f"in={int(item.get('prompt_tokens', 0) or 0)} "
+                            + f"out={int(item.get('completion_tokens', 0) or 0)} "
+                            + f"total={int(item.get('total_tokens', 0) or 0)} "
+                            + f"provider={provider_name} source={source}"
+                        )
+                    )
+
+    def _render_tool_events_summary(self, payload: dict[str, Any]) -> None:
+        events = payload.get("tool_events")
+        if not isinstance(events, list) or not events:
+            return
+        print(self.style.dim("[tools]"))
+        total_call = 0
+        total_result = 0
+        for idx, item in enumerate(events, start=1):
+            if not isinstance(item, dict):
+                continue
+            self._render_tool_event(item, idx)
+            name = str(item.get("name", "tool"))
+            args = item.get("args", {})
+            result = item.get("result")
+            try:
+                args_json = json.dumps(args, ensure_ascii=True, sort_keys=True)
+            except Exception:  # noqa: BLE001
+                args_json = repr(args)
+            try:
+                result_json = json.dumps(result, ensure_ascii=True)
+            except Exception:  # noqa: BLE001
+                result_json = repr(result)
+            total_call += self._estimate_tokens_from_text(f"{name} {args_json}")
+            total_result += self._estimate_tokens_from_text(result_json)
+        print(
+            self.style.dim(
+                f"tool tokens total: call={total_call} result={total_result} total={total_call + total_result}"
+            )
+        )
+
+    def _render_tool_forwarding(self, payload: dict[str, Any]) -> None:
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return
+        forwarding = usage.get("tool_forwarding")
+        if not isinstance(forwarding, dict):
+            return
+        mode = str(forwarding.get("mode", "auto"))
+        compacted = int(forwarding.get("compacted_events", 0) or 0)
+        events = int(forwarding.get("event_count", 0) or 0)
+        orig = int(forwarding.get("original_tokens_total", 0) or 0)
+        fwd = int(forwarding.get("forwarded_tokens_total", 0) or 0)
+        if events <= 0:
+            return
+        print(self.style.dim(f"tool forward mode={mode} events={events} compacted={compacted} tokens={orig}->{fwd}"))
+        alerts = forwarding.get("alerts")
+        if isinstance(alerts, list):
+            for item in alerts[:6]:
+                print(self.style.warn("  " + str(item)))
+        if compacted > 0 and mode == "auto":
+            print(self.style.dim("  hint: use `/toolresult full` to send full payload, or keep auto to save tokens."))
 
     def _investigate_backend_reason(self, exc: Exception) -> str | None:
         text = str(exc).lower()
@@ -824,6 +986,14 @@ class PoeCoderCLI:
             )
             resp.raise_for_status()
             print(self.style.ok(self._t("msg.think_details_updated", value=str(enabled).lower())))
+            return False
+        if cmd == "/toolresult" and len(parts) == 2:
+            mode = parts[1].lower()
+            if mode not in {"auto", "compact", "full"}:
+                print(self.style.warn(self._t("msg.tool_result_mode_usage")))
+                return False
+            self.state.tool_result_mode = mode
+            print(self.style.ok(self._t("msg.tool_result_mode_updated", mode=mode)))
             return False
         if cmd == "/commandpolicy" and len(parts) >= 2:
             flag = parts[1].lower()
@@ -1295,7 +1465,10 @@ class PoeCoderCLI:
             "thinking_level": self.state.thinking_level,
             "thinking_budget": self.state.thinking_budget,
             "context_keys": [],
-            "metadata": {"show_think_details": self.state.show_think_details},
+            "metadata": {
+                "show_think_details": self.state.show_think_details,
+                "tool_result_mode": self.state.tool_result_mode,
+            },
         }
         async with httpx.AsyncClient(timeout=90.0) as async_http:
             saw_delta = False
@@ -1328,6 +1501,7 @@ class PoeCoderCLI:
 
     async def _stream_backend_turn(self, async_http: httpx.AsyncClient, payload: dict[str, Any]) -> bool:
         saw_delta = False
+        tool_idx = 0
         async with async_http.stream(
             "POST",
             f"{self.state.backend_url}/turns/execute/stream",
@@ -1352,8 +1526,12 @@ class PoeCoderCLI:
                     print(self.style.info(self._t("stream.model", model=data.get("model"))))
                     continue
                 if etype == "tool":
-                    name = data.get("name", "tool")
-                    print(self.style.info(self._t("stream.tool", name=name)))
+                    if isinstance(data, dict):
+                        tool_idx += 1
+                        self._render_tool_event(data, tool_idx)
+                    else:
+                        name = "tool"
+                        print(self.style.info(self._t("stream.tool", name=name)))
                     continue
                 if etype == "delta":
                     if not saw_delta:
@@ -1399,6 +1577,8 @@ class PoeCoderCLI:
         text = str(payload.get("output_text", ""))
         if show_text and text:
             print(self.style.title(self._t("stream.assistant")) + text)
+        self._render_tool_events_summary(payload)
+        self._render_tool_forwarding(payload)
         model = payload.get("model")
         if model:
             self.state.active_model = str(model)
@@ -1411,6 +1591,7 @@ class PoeCoderCLI:
                     )
                 )
             )
+        self._render_token_breakdown(payload)
 
     async def _run_direct_turn(self, prompt: str, images: list[str] | None = None) -> None:
         direct_context = dict(self.state.local_context)

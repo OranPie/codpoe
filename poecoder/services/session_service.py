@@ -224,6 +224,8 @@ class SessionService:
             SELECT key, value_json, scope, created_at
             FROM context_entries
             WHERE session_id = ?
+              AND key != 'last_model_output'
+              AND key NOT LIKE 'tool:%'
             ORDER BY created_at DESC
             """,
             (session_id,),

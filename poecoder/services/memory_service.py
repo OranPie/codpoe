@@ -47,9 +47,15 @@ class MemoryService:
         if req.query:
             filters.append("content LIKE ?")
             params.append(f"%{req.query}%")
+        if req.min_priority is not None:
+            filters.append("priority >= ?")
+            params.append(req.min_priority)
 
         where = " AND ".join(filters) if filters else "1=1"
-        params.append(req.limit)
+        fetch_limit = req.limit
+        if req.tags_any:
+            fetch_limit = max(req.limit * 6, req.limit)
+        params.append(fetch_limit)
         rows = self.db.query_all(
             f"""
             SELECT * FROM memory_entries
@@ -59,20 +65,37 @@ class MemoryService:
             """,
             tuple(params),
         )
-        return [
-            MemoryEntryView(
-                id=row["id"],
-                scope=row["scope"],
-                session_id=row["session_id"],
-                project_id=row["project_id"],
-                tags=loads(row["tags_json"]),
-                priority=row["priority"],
-                content=row["content"],
-                created_at=parse_dt(row["created_at"]),
-                updated_at=parse_dt(row["updated_at"]),
+        want_tags = {tag.strip() for tag in req.tags_any if isinstance(tag, str) and tag.strip()}
+        out: list[MemoryEntryView] = []
+        for row in rows:
+            tags = loads(row["tags_json"])
+            if want_tags and not any(str(tag) in want_tags for tag in tags):
+                continue
+            content = str(row["content"])
+            if not req.include_content:
+                content = ""
+            elif req.max_content_chars is not None and len(content) > req.max_content_chars:
+                cap = max(int(req.max_content_chars), 1)
+                if cap <= 3:
+                    content = content[:cap]
+                else:
+                    content = content[: cap - 3] + "..."
+            out.append(
+                MemoryEntryView(
+                    id=row["id"],
+                    scope=row["scope"],
+                    session_id=row["session_id"],
+                    project_id=row["project_id"],
+                    tags=tags,
+                    priority=row["priority"],
+                    content=content,
+                    created_at=parse_dt(row["created_at"]),
+                    updated_at=parse_dt(row["updated_at"]),
+                )
             )
-            for row in rows
-        ]
+            if len(out) >= req.limit:
+                break
+        return out
 
     def edit(self, req: MemoryEditRequest) -> int:
         targets = self._target_ids(req)

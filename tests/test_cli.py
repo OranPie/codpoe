@@ -253,6 +253,60 @@ def test_cli_prints_per_message_cost(monkeypatch, capsys) -> None:
     assert "message cost=4 points (balance 1000->996)" in out
 
 
+def test_cli_toolresult_command_updates_state(capsys) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    handled = cli._handle_command("/toolresult full")
+    assert handled is False
+    assert cli.state.tool_result_mode == "full"
+    out = capsys.readouterr().out
+    assert "Tool result forwarding mode=full" in out
+
+
+def test_cli_renders_tool_call_details_with_capped_result_preview(capsys) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    payload = {
+        "session_id": "s1",
+        "model": "assistant",
+        "output_text": "done",
+        "tool_events": [
+            {
+                "name": "ListFile",
+                "args": {"path": ".", "pattern": "*", "recursive": False, "limit": 800},
+                "result": {"entries": [f"file_{i}.py" for i in range(240)], "count": 240, "truncated": False},
+            }
+        ],
+        "usage": {
+            "tool_forwarding": {
+                "mode": "auto",
+                "event_count": 1,
+                "compacted_events": 1,
+                "original_tokens_total": 1400,
+                "forwarded_tokens_total": 260,
+                "alerts": ["tool#1 ListFile: compacted 1400->260 tokens (5600->1040 chars)"],
+            }
+        },
+    }
+    cli._render_backend_nonstream_result(payload)
+    out = capsys.readouterr().out
+    assert "tool#1 ListFile tokens(call=" in out
+    assert "args=" in out
+    assert "\"limit\": 800" in out
+    assert "result> {" in out
+    assert "preview truncated" in out
+    assert "tool tokens total: call=" in out
+    assert "tool forward mode=auto events=1 compacted=1 tokens=1400->260" in out
+
+
 def test_cli_balance_prints_openai_details(monkeypatch, capsys) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",
