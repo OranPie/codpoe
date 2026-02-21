@@ -1,0 +1,79 @@
+# PoeCoder Command Surface
+
+This document lists model/user command names with compact argument and effect notes.
+
+- ReadRaw
+  - args: file, line, end_line
+  - effect: returns raw file text window
+- ReadStruct
+  - args: target, language, dependency_depth
+  - effect: returns AST/structure summary and dependency links
+- ReadRecursive (alias: ReadRecurisive)
+  - args: seed_files, boundary
+  - effect: expands implementation graph through imports
+- Search
+  - args: pattern, file_pattern, boundary, root
+  - effect: regex match results with local context lines
+- WriteRaw
+  - args: file, line, content, append
+  - effect: line insert/append write to file
+- WriteReplace
+  - args: pattern, replacement, location, max_changes
+  - effect: regex replacement over scoped files
+- GetWebRaw
+  - args: url, timeout_s, max_chars, headers
+  - effect: fetches raw HTML/text payload from a URL
+- GetWeb
+  - args: url, focus, timeout_s, max_chars
+  - effect: returns compact web extraction for agent reasoning/synthesis
+- GetWebFile
+  - args: url, save_as, folder, overwrite, timeout_s, max_bytes
+  - effect: downloads remote file into local managed download folder
+- TmpWrite
+  - args: name, content, ttl_seconds
+  - effect: stores temporary artifact with expiration
+- WriteMemory
+  - args: scope, content, tags, priority, session_id, project_id
+  - effect: creates memory entry
+- ReadMemory
+  - args: query, scope, session_id, project_id, limit
+  - effect: returns matching memory entries
+- EditMemory
+  - args: entry_id or query, operation, payload, scope
+  - effect: updates memory content
+- DelMemory
+  - args: entry_id or query, scope
+  - effect: deletes matching memory entries
+- InstallCommand
+  - args: name, definition, runtime, args_schema, effect_schema, capabilities, source, signature
+  - effect: installs/updates command registry entry
+- EditCommand
+  - args: name and patch fields
+  - effect: updates installed command definition
+- DelCommand
+  - args: name
+  - effect: deletes installed command definition
+- GetBalance
+  - args: optional refresh
+  - effect: fetches current Poe point balance from usage API
+- ListModels
+  - args: none
+  - effect: lists allowed model names for main/subagent use
+- ChangeModel
+  - args: model, optional session_id
+  - effect: changes active main model for the session
+- StartSubAgent
+  - args: parent_session_id, model, perm, prompt, context_share, system_message_modifier
+  - effect: starts subagent task with optional subagent system-message modifier
+- ReadSubAgent
+  - args: agent_id
+  - effect: returns current subagent state/result
+- WaitSubAgent
+  - args: agent_id, timeout_s
+  - effect: waits for subagent completion window
+- CancelSubAgent
+  - args: agent_id
+  - effect: cancels running subagent
+- RunShell
+  - args: session_id, command, danger_level, cwd, timeout_s
+  - effect: executes shell under policy gate and returns output

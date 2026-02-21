@@ -1,0 +1,3 @@
+[console_scripts]
+poecoder = poecoder.cli:main
+poecoder-api = poecoder.api:run
