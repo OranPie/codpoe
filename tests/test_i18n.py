@@ -14,6 +14,7 @@ def test_translator_zhcn_strings() -> None:
     tr = Translator("zh-cn")
     assert "命令" in tr.t("cli.help")
     assert "/leader" in tr.t("cli.help")
+    assert "/login" in tr.t("cli.help")
     assert tr.t("msg.current_balance", points=12) == "当前余额：12 点"
     assert tr.t("table.model") == "模型"
     assert tr.t("msg.current_model", model="assistant") == "当前模型=assistant"

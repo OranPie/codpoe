@@ -27,6 +27,7 @@ PoeCoder is a Python coding assistant runtime with:
 - `/listmodels` to inspect supported models.
 - `/modeltable` to inspect/edit model strategy profiles used for auto model choice.
 - `/changemodel <name|auto>` to switch main model during a session.
+- `/login [api_key]` to set/update Poe API key (prompts securely when omitted).
 - `/plan` to switch to planning mode with planning-focused system message.
 - `/thinking <quick|balanced|deep> [budget]` to control model reasoning depth/token budget hints.
 - `/commandpolicy <allow|deny> [encourage|noencourage]` to control model self-command creation autonomy.
@@ -52,3 +53,4 @@ PoeCoder is a Python coding assistant runtime with:
 - `GET /tools/catalog` exposes the command/tool reference so the model can follow exact command names and args.
 - Context selection is relevance-ranked + compacted by default to reduce token waste while keeping important session context.
 - Turn streaming now uses model chunk streaming for lower latency (`delta` events are emitted as chunks arrive).
+- GitHub Actions: CI runs tests on pushes/PRs to `main`; release workflow builds/tests and publishes GitHub Releases on `v*` tags.

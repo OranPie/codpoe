@@ -6,6 +6,7 @@ import json
 import mimetypes
 import shlex
 import sys
+from getpass import getpass
 from base64 import b64encode
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -288,6 +289,9 @@ class PoeCoderCLI:
         payload = b64encode(path.read_bytes()).decode("ascii")
         return f"data:{mime};base64,{payload}"
 
+    def _prompt_api_key(self) -> str:
+        return getpass(self._t("cli.api_key_prompt")).strip()
+
     def _consume_pending_images(self) -> list[str]:
         if not self.state.pending_images:
             return []
@@ -325,6 +329,25 @@ class PoeCoderCLI:
             return True
         if cmd == "/help":
             print(self._t("cli.help"))
+            return False
+        if cmd == "/login":
+            api_key = parts[1].strip() if len(parts) >= 2 else self._prompt_api_key()
+            if not api_key:
+                print(self.style.warn(self._t("msg.login_cancelled")))
+                return False
+            if self.direct:
+                self.settings.poe_api_key = api_key
+                self.direct_model_client.api_key = api_key
+                print(self.style.ok(self._t("msg.login_direct_updated")))
+                return False
+            resp = self.http.post(
+                f"{self.state.backend_url}/auth/poe/login",
+                json={"api_key": api_key},
+            )
+            resp.raise_for_status()
+            self.settings.poe_api_key = api_key
+            self.direct_model_client.api_key = api_key
+            print(self.style.ok(self._t("msg.login_backend_updated")))
             return False
         if cmd == "/lang" and len(parts) == 2:
             requested = parts[1]

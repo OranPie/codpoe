@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from poecoder.app_state import AppState, build_app_state
 from poecoder.models import (
+    ApiLoginRequest,
     CommandInstallRequest,
     CommandPatchRequest,
     ChangeModelRequest,
@@ -70,6 +71,22 @@ app.add_middleware(
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/auth/poe/login")
+def auth_poe_login(req: ApiLoginRequest) -> dict[str, Any]:
+    state = get_state()
+    api_key = req.api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+
+    state.settings.poe_api_key = api_key
+    state.turns.model_client.api_key = api_key
+    state.subagents.model_client.api_key = api_key
+    state.reviews.model_client.api_key = api_key
+    state.model_catalog.api_key = api_key
+    state.usage.api_key = api_key
+    return {"ok": True, "message": "poe api key updated"}
 
 
 @app.post("/sessions")

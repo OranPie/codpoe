@@ -10,10 +10,12 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "cli.title": "PoeCoder CLI",
         "cli.type_help": "(type /help)",
         "cli.prompt": "poecoder> ",
+        "cli.api_key_prompt": "Poe API key: ",
         "cli.help": """
 Commands:
   /help                               Show this help
   /quit                               Exit CLI
+  /login [api_key]                    Set/update Poe API key (prompt if omitted)
   /system <text>                      Set system message
   /mode <coding|chat|planning|leader> Start new backend session in mode
   /plan                               Switch to planning mode + planning system message
@@ -46,6 +48,9 @@ Commands:
   /canceltask <task_id>                Cancel background task
   /shell <danger> <command>           Run shell command through policy engine
 """.strip(),
+        "msg.login_cancelled": "API key login cancelled.",
+        "msg.login_direct_updated": "Direct Poe API key updated.",
+        "msg.login_backend_updated": "Backend Poe API key updated.",
         "msg.system_updated": "System message updated.",
         "msg.mode_set": "Mode set to {mode}",
         "msg.invalid_mode": "Invalid mode: {mode}",
@@ -135,10 +140,12 @@ Commands:
         "cli.title": "PoeCoder CLI",
         "cli.type_help": "（输入 /help 查看帮助）",
         "cli.prompt": "poecoder> ",
+        "cli.api_key_prompt": "Poe API Key：",
         "cli.help": """
 命令：
   /help                               显示帮助
   /quit                               退出 CLI
+  /login [api_key]                    设置/更新 Poe API Key（省略则提示输入）
   /system <text>                      设置系统提示词
   /mode <coding|chat|planning|leader> 以指定模式创建后端会话
   /plan                               切换到规划模式并启用规划系统提示词
@@ -171,6 +178,9 @@ Commands:
   /canceltask <task_id>                取消后台任务
   /shell <danger> <command>           通过策略引擎执行 shell 命令
 """.strip(),
+        "msg.login_cancelled": "已取消 API Key 登录。",
+        "msg.login_direct_updated": "直连 Poe API Key 已更新。",
+        "msg.login_backend_updated": "后端 Poe API Key 已更新。",
         "msg.system_updated": "系统提示词已更新。",
         "msg.mode_set": "模式已切换为 {mode}",
         "msg.invalid_mode": "无效模式：{mode}",

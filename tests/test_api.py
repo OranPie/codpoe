@@ -102,6 +102,28 @@ def test_listmodels_and_changemodel(monkeypatch, tmp_path):
     assert "gpt-4.1" in tool_resp.json()["result"]["models"]
 
 
+def test_api_login_updates_runtime_keys(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    monkeypatch.delenv("POECODER_POE_API_KEY", raising=False)
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    resp = client.post("/auth/poe/login", json={"api_key": "demo-key"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert api.STATE is not None
+    assert api.STATE.settings.poe_api_key == "demo-key"
+    assert api.STATE.turns.model_client.api_key == "demo-key"
+    assert api.STATE.subagents.model_client.api_key == "demo-key"
+    assert api.STATE.reviews.model_client.api_key == "demo-key"
+    assert api.STATE.model_catalog.api_key == "demo-key"
+    assert api.STATE.usage.api_key == "demo-key"
+
+
 def test_usage_balance_and_tool(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
