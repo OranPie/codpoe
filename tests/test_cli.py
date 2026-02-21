@@ -19,6 +19,7 @@ def test_cli_start_falls_back_to_direct_when_backend_unreachable(monkeypatch) ->
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(cli, "_ensure_session", fail_session)
+    monkeypatch.setattr(cli, "_prompt_api_key", lambda: "")
     monkeypatch.setattr(builtins, "input", lambda _prompt="": "/quit")
 
     cli.start()
@@ -39,6 +40,7 @@ def test_cli_command_backend_error_is_handled_without_traceback(monkeypatch) -> 
     responses = iter(["/listmodels", "/quit"])
 
     monkeypatch.setattr(cli, "_ensure_session", fake_session)
+    monkeypatch.setattr(cli, "_prompt_api_key", lambda: "")
     monkeypatch.setattr(builtins, "input", lambda _prompt="": next(responses))
     monkeypatch.setattr(
         cli.http,
@@ -48,3 +50,21 @@ def test_cli_command_backend_error_is_handled_without_traceback(monkeypatch) -> 
 
     cli.start()
     assert cli.direct is False
+
+
+def test_cli_prompts_for_api_key_when_missing(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=True,
+        model="assistant",
+        lang="en",
+    )
+    cli.settings.poe_api_key = None
+    cli.direct_model_client.api_key = None
+
+    monkeypatch.setattr(cli, "_prompt_api_key", lambda: "poe-demo-key")
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": "/quit")
+
+    cli.start()
+    assert cli.settings.poe_api_key == "poe-demo-key"
+    assert cli.direct_model_client.api_key == "poe-demo-key"

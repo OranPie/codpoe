@@ -49,6 +49,7 @@ Commands:
   /shell <danger> <command>           Run shell command through policy engine
 """.strip(),
         "msg.login_cancelled": "API key login cancelled.",
+        "msg.api_key_missing_prompt": "No Poe API key configured. Enter one now (press Enter to skip).",
         "msg.login_direct_updated": "Direct Poe API key updated.",
         "msg.login_backend_updated": "Backend Poe API key updated.",
         "msg.login_backend_failed_direct_only": "Backend unavailable; saved key for direct mode only.",
@@ -183,6 +184,7 @@ Commands:
   /shell <danger> <command>           通过策略引擎执行 shell 命令
 """.strip(),
         "msg.login_cancelled": "已取消 API Key 登录。",
+        "msg.api_key_missing_prompt": "未配置 Poe API Key。现在输入（直接回车可跳过）。",
         "msg.login_direct_updated": "直连 Poe API Key 已更新。",
         "msg.login_backend_updated": "后端 Poe API Key 已更新。",
         "msg.login_backend_failed_direct_only": "后端不可用；仅已保存到直连模式。",

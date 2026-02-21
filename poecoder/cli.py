@@ -67,6 +67,7 @@ class Style:
 
 class PoeCoderCLI:
     def __init__(self, backend_url: str, direct: bool, model: str | None, lang: str | None) -> None:
+        self._configure_line_editing()
         self.settings = get_settings()
         self.direct = direct
         self.model = model or self.settings.default_large_model
@@ -290,7 +291,45 @@ class PoeCoderCLI:
         return f"data:{mime};base64,{payload}"
 
     def _prompt_api_key(self) -> str:
-        return getpass(self._t("cli.api_key_prompt")).strip()
+        try:
+            return getpass(self._t("cli.api_key_prompt")).strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
+    @staticmethod
+    def _configure_line_editing() -> None:
+        try:
+            import readline  # noqa: PLC0415
+
+            readline.parse_and_bind(r'"\C-h": backward-delete-char')
+            readline.parse_and_bind(r'"\C-?": backward-delete-char')
+        except Exception:
+            # Best effort only; some platforms don't provide readline.
+            return
+
+    def _maybe_request_api_key(self) -> None:
+        if self.settings.poe_api_key or self.direct_model_client.api_key:
+            return
+        print(self.style.warn(self._t("msg.api_key_missing_prompt")))
+        api_key = self._prompt_api_key()
+        if not api_key:
+            print(self.style.warn(self._t("msg.login_cancelled")))
+            return
+        self.settings.poe_api_key = api_key
+        self.direct_model_client.api_key = api_key
+        if self.direct:
+            print(self.style.ok(self._t("msg.login_direct_updated")))
+            return
+        try:
+            resp = self.http.post(
+                f"{self.state.backend_url}/auth/poe/login",
+                json={"api_key": api_key},
+            )
+            resp.raise_for_status()
+            print(self.style.ok(self._t("msg.login_backend_updated")))
+        except httpx.HTTPError as exc:
+            print(self.style.warn(self._t("msg.login_backend_failed_direct_only")))
+            self._render_backend_error(exc)
 
     def _consume_pending_images(self) -> list[str]:
         if not self.state.pending_images:
@@ -321,6 +360,7 @@ class PoeCoderCLI:
                 self._ensure_session(self.state.mode)
             except httpx.HTTPError as exc:
                 self._render_backend_error(exc, startup=True)
+        self._maybe_request_api_key()
         while True:
             try:
                 raw = input(self._t("cli.prompt")).strip()
