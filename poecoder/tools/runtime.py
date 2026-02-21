@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from poecoder.models import MemoryEditRequest, MemoryReadRequest, MemoryWriteRequest
+from poecoder.models import (
+    MemoryEditRequest,
+    MemoryReadRequest,
+    MemoryWriteRequest,
+    TaskStartSubagentRequest,
+    TurnRequest,
+)
 from poecoder.services.audit_service import AuditService
 from poecoder.services.command_service import CommandService
 from poecoder.services.memory_service import MemoryService
@@ -17,6 +23,9 @@ from poecoder.services.usage_service import UsageService
 from poecoder.services.wiki_service import WikiService
 from poecoder.tools.code_tools import CodeTools
 from poecoder.tools.web_tools import WebTools
+
+if TYPE_CHECKING:
+    from poecoder.services.task_service import TaskService
 
 
 @dataclass(slots=True)
@@ -32,6 +41,7 @@ class ToolRuntime:
     model_catalog: ModelCatalog
     web_tools: WebTools
     usage_service: UsageService
+    task_service: "TaskService | None" = None
 
     async def invoke(self, actor: str, name: str, args: dict[str, Any]) -> Any:
         started = time.perf_counter()
@@ -123,6 +133,56 @@ class ToolRuntime:
             return await self.subagent_service.wait(args["agent_id"], timeout_s=args.get("timeout_s", 60))
         if name == "CancelSubAgent":
             return self.subagent_service.cancel(args["agent_id"])
+
+        if name == "StartBackgroundTurn":
+            if self.task_service is None:
+                raise ValueError("task service unavailable")
+            task = await self.task_service.start_turn(
+                TurnRequest(
+                    session_id=args["session_id"],
+                    user_prompt=args["user_prompt"],
+                    system_message=args.get("system_message"),
+                    images=args.get("images", []) or [],
+                    context_keys=args.get("context_keys", []) or [],
+                    metadata=args.get("metadata", {}) or {},
+                )
+            )
+            return task.model_dump(mode="json")
+        if name == "StartBackgroundSubAgent":
+            if self.task_service is None:
+                raise ValueError("task service unavailable")
+            task = await self.task_service.start_subagent(
+                TaskStartSubagentRequest(
+                    parent_session_id=args["parent_session_id"],
+                    model=args["model"],
+                    perm=args.get("perm", "readonly"),
+                    prompt=args["prompt"],
+                    images=args.get("images", []) or [],
+                    context_share=args.get("context_share", []) or [],
+                    system_message_modifier=args.get("system_message_modifier"),
+                    wait_timeout_s=args.get("wait_timeout_s", 600),
+                )
+            )
+            return task.model_dump(mode="json")
+        if name == "ListTasks":
+            if self.task_service is None:
+                raise ValueError("task service unavailable")
+            return [
+                item.model_dump(mode="json")
+                for item in self.task_service.list(
+                    limit=int(args.get("limit", 50)),
+                    state=args.get("state"),
+                    task_type=args.get("task_type"),
+                )
+            ]
+        if name in {"ReadTaskOutput", "ReadTask"}:
+            if self.task_service is None:
+                raise ValueError("task service unavailable")
+            return self.task_service.read_output(args["task_id"])
+        if name == "CancelTask":
+            if self.task_service is None:
+                raise ValueError("task service unavailable")
+            return self.task_service.cancel(args["task_id"]).model_dump(mode="json")
 
         if name == "RunShell":
             return (await self.shell_service.run(**args)).model_dump(mode="json")

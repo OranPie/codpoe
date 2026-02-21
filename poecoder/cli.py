@@ -3,32 +3,21 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import mimetypes
 import shlex
 import sys
+from base64 import b64encode
+from datetime import datetime
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from poecoder.config import get_settings
+from poecoder.i18n import Translator, is_supported_lang, normalize_lang, supported_langs
+from poecoder.prompts import PLAN_SYSTEM_MESSAGE
 from poecoder.services.model_clients import PoeModelClient
-
-
-HELP_TEXT = """
-Commands:
-  /help                               Show this help
-  /quit                               Exit CLI
-  /system <text>                      Set system message
-  /mode <coding|chat|planning>        Start new backend session in mode
-  /listmodels                         List supported models
-  /changemodel <name|auto>            Change active main model
-  /balance                            Fetch current Poe point balance
-  /context <key> <json>               Store context key/value in backend session
-  /memory <scope> <text>              Write memory entry (session|project|global)
-  /wiki <topic> <text>                Add project wiki note
-  /subagent <model> <perm> <prompt>   Start subagent
-  /shell <danger> <command>           Run shell command through policy engine
-"""
 
 
 @dataclass(slots=True)
@@ -36,9 +25,11 @@ class CliState:
     backend_url: str
     session_id: str | None = None
     mode: str = "coding"
+    active_model: str | None = None
     system_message: str = ""
     project_id: str = "default"
     local_context: dict[str, Any] = field(default_factory=dict)
+    pending_images: list[str] = field(default_factory=list)
 
 
 class Style:
@@ -65,9 +56,12 @@ class Style:
     def dim(self, text: str) -> str:
         return self._wrap(text, "2")
 
+    def error(self, text: str) -> str:
+        return self._wrap(text, "31")
+
 
 class PoeCoderCLI:
-    def __init__(self, backend_url: str, direct: bool, model: str | None) -> None:
+    def __init__(self, backend_url: str, direct: bool, model: str | None, lang: str | None) -> None:
         self.settings = get_settings()
         self.direct = direct
         self.model = model or self.settings.default_large_model
@@ -76,14 +70,161 @@ class PoeCoderCLI:
         self.async_http = httpx.AsyncClient(timeout=90.0)
         self.direct_model_client = PoeModelClient(self.settings.poe_api_url, self.settings.poe_api_key)
         self.style = Style()
+        self.i18n = Translator(lang=normalize_lang(lang or self.settings.lang))
+
+    def _t(self, key: str, **kwargs: Any) -> str:
+        return self.i18n.t(key, **kwargs)
+
+    @staticmethod
+    def _shorten(text: str, limit: int) -> str:
+        clean = text.replace("\n", " ").strip()
+        if len(clean) <= limit:
+            return clean
+        if limit <= 3:
+            return clean[:limit]
+        return clean[: limit - 3] + "..."
+
+    @staticmethod
+    def _json_text(data: Any, indent: int | None = None) -> str:
+        return json.dumps(data, ensure_ascii=False, indent=indent)
+
+    @staticmethod
+    def _format_timestamp(value: str | None) -> str:
+        if not value:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return value
+
+    def _print_table(self, headers: list[str], rows: list[list[str]]) -> None:
+        if not rows:
+            print(self.style.dim(self._t("msg.table_empty")))
+            return
+        widths = [len(h) for h in headers]
+        for row in rows:
+            for idx, cell in enumerate(row):
+                widths[idx] = max(widths[idx], len(cell))
+
+        sep = "+-" + "-+-".join("-" * width for width in widths) + "-+"
+        print(sep)
+        print("| " + " | ".join(headers[idx].ljust(widths[idx]) for idx in range(len(headers))) + " |")
+        print(sep)
+        for row in rows:
+            print("| " + " | ".join(row[idx].ljust(widths[idx]) for idx in range(len(headers))) + " |")
+        print(sep)
+
+    def _render_models(self, models: list[str]) -> None:
+        current = self.model if self.direct else (self.state.active_model or "auto")
+        print(self.style.info(self._t("msg.models_header", count=len(models))))
+        if not models:
+            print(self.style.dim(self._t("msg.models_empty")))
+            return
+        rows: list[list[str]] = []
+        for idx, name in enumerate(models, start=1):
+            marker = "*" if name == current else " "
+            rows.append([str(idx), marker, name])
+        self._print_table(
+            [self._t("table.no"), self._t("table.current"), self._t("table.model")],
+            rows,
+        )
+        print(self.style.dim(self._t("msg.current_model", model=current)))
+
+    def _render_task_list(self, tasks: list[dict[str, Any]]) -> None:
+        print(self.style.info(self._t("msg.task_list_header", count=len(tasks))))
+        if not tasks:
+            print(self.style.dim(self._t("msg.no_tasks")))
+            return
+        rows: list[list[str]] = []
+        for task in tasks:
+            payload = task.get("payload", {}) or {}
+            summary_raw = str(payload.get("user_prompt") or payload.get("prompt") or "")
+            rows.append(
+                [
+                    self._shorten(str(task.get("id", "")), 12),
+                    self._shorten(str(task.get("task_type", "")), 10),
+                    self._shorten(str(task.get("state", "")), 10),
+                    self._format_timestamp(task.get("updated_at")),
+                    self._shorten(summary_raw, 46),
+                ]
+            )
+        self._print_table(
+            [
+                self._t("table.id"),
+                self._t("table.type"),
+                self._t("table.state"),
+                self._t("table.updated"),
+                self._t("table.summary"),
+            ],
+            rows,
+        )
+
+    def _render_task_detail(self, task: dict[str, Any]) -> None:
+        print(self.style.info(self._t("msg.task_detail", id=task.get("id", ""))))
+        rows = [
+            [self._t("table.type"), str(task.get("task_type", "-"))],
+            [self._t("table.state"), str(task.get("state", "-"))],
+            [self._t("table.created"), self._format_timestamp(task.get("created_at"))],
+            [self._t("table.updated"), self._format_timestamp(task.get("updated_at"))],
+        ]
+        self._print_table([self._t("table.field"), self._t("table.value")], rows)
+
+        payload = task.get("payload")
+        if payload:
+            print(self.style.dim(f"{self._t('table.payload')}:"))
+            print(self._json_text(payload, indent=2))
+        result = task.get("result")
+        if result:
+            print(self.style.dim(f"{self._t('table.result')}:"))
+            print(self._json_text(result, indent=2))
+        error = task.get("error")
+        if error:
+            print(self.style.error(f"{self._t('table.error')}: {error}"))
+
+    def _render_task_output(self, payload: dict[str, Any]) -> None:
+        print(
+            self.style.info(
+                self._t(
+                    "msg.task_output_header",
+                    id=payload.get("task_id", ""),
+                    state=payload.get("state", "-"),
+                )
+            )
+        )
+        if payload.get("result") is not None:
+            print(self.style.dim(f"{self._t('table.result')}:"))
+            print(self._json_text(payload.get("result"), indent=2))
+        elif payload.get("error"):
+            print(self.style.error(f"{self._t('table.error')}: {payload.get('error')}"))
+        else:
+            print(self.style.dim(self._t("msg.task_output_pending")))
+
+    def _to_image_ref(self, value: str) -> str:
+        src = value.strip()
+        if src.startswith("http://") or src.startswith("https://") or src.startswith("data:"):
+            return src
+        path = Path(src).expanduser()
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(src)
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        payload = b64encode(path.read_bytes()).decode("ascii")
+        return f"data:{mime};base64,{payload}"
+
+    def _consume_pending_images(self) -> list[str]:
+        if not self.state.pending_images:
+            return []
+        images = list(self.state.pending_images)
+        self.state.pending_images.clear()
+        return images
 
     def start(self) -> None:
-        print(self.style.title("PoeCoder CLI"), self.style.dim("(type /help)"))
+        print(self.style.title(self._t("cli.title")), self.style.dim(self._t("cli.type_help")))
         if not self.direct:
             self._ensure_session(self.state.mode)
         while True:
             try:
-                raw = input("poecoder> ").strip()
+                raw = input(self._t("cli.prompt")).strip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 break
@@ -94,9 +235,11 @@ class PoeCoderCLI:
                     break
                 continue
             if self.direct:
-                asyncio.run(self._run_direct_turn(raw))
+                images = self._consume_pending_images()
+                asyncio.run(self._run_direct_turn(raw, images))
             else:
-                asyncio.run(self._run_backend_turn(raw))
+                images = self._consume_pending_images()
+                asyncio.run(self._run_backend_turn(raw, images))
 
     def _handle_command(self, raw: str) -> bool:
         parts = shlex.split(raw)
@@ -104,33 +247,73 @@ class PoeCoderCLI:
         if cmd == "/quit":
             return True
         if cmd == "/help":
-            print(HELP_TEXT.strip())
+            print(self._t("cli.help"))
+            return False
+        if cmd == "/lang" and len(parts) == 2:
+            requested = parts[1]
+            if not is_supported_lang(requested):
+                print(self.style.warn(self._t("msg.lang_invalid", lang=requested)))
+                print(self.style.dim(f"supported: {', '.join(supported_langs())}"))
+                return False
+            new_lang = self.i18n.set_lang(requested)
+            label = self._t(f"lang.{new_lang}")
+            print(self.style.ok(self._t("msg.lang_switched", lang=label)))
             return False
         if cmd == "/system":
             self.state.system_message = raw[len("/system") :].strip()
-            print(self.style.ok("System message updated."))
+            print(self.style.ok(self._t("msg.system_updated")))
             return False
         if cmd == "/mode" and len(parts) == 2:
-            self.state.mode = parts[1]
+            target_mode = "planning" if parts[1] == "plan" else parts[1]
+            self.state.mode = target_mode
             if not self.direct:
                 self._ensure_session(self.state.mode)
-            print(self.style.ok(f"Mode set to {self.state.mode}"))
+            print(self.style.ok(self._t("msg.mode_set", mode=self.state.mode)))
+            return False
+        if cmd == "/plan":
+            self.state.mode = "planning"
+            self.state.system_message = PLAN_SYSTEM_MESSAGE
+            if not self.direct:
+                self._ensure_session(self.state.mode)
+            print(self.style.ok(self._t("msg.plan_mode_enabled")))
+            return False
+        if cmd == "/image" and len(parts) == 2:
+            try:
+                image_ref = self._to_image_ref(parts[1])
+            except FileNotFoundError:
+                print(self.style.warn(self._t("msg.image_not_found", path=parts[1])))
+                return False
+            self.state.pending_images.append(image_ref)
+            print(self.style.ok(self._t("msg.image_added", count=len(self.state.pending_images))))
+            return False
+        if cmd == "/images":
+            if not self.state.pending_images:
+                print(self.style.dim(self._t("msg.images_empty")))
+                return False
+            rows = []
+            for idx, image in enumerate(self.state.pending_images, start=1):
+                label = image if image.startswith("http") else "data:image/*"
+                rows.append([str(idx), self._shorten(label, 64)])
+            self._print_table([self._t("table.no"), self._t("table.image")], rows)
+            return False
+        if cmd == "/clearimages":
+            self.state.pending_images.clear()
+            print(self.style.ok(self._t("msg.images_cleared")))
             return False
         if cmd in {"/listmodels", "/models"}:
             if self.direct:
-                print(json.dumps({"models": self.settings.supported_models}, ensure_ascii=True))
+                self._render_models(self.settings.supported_models)
                 return False
             resp = self.http.get(f"{self.state.backend_url}/models", params={"refresh": "true"})
             resp.raise_for_status()
             data = resp.json()
-            print(self.style.info(f"models ({len(data.get('models', []))})"))
-            print(json.dumps(data, ensure_ascii=True))
+            self._render_models(data.get("models", []))
             return False
         if cmd in {"/changemodel", "/model"} and len(parts) == 2:
             target = parts[1]
             if self.direct:
                 self.model = target
-                print(self.style.ok(f"Direct model set to {self.model}"))
+                print(self.style.ok(self._t("msg.direct_model_set", model=self.model)))
                 return False
             resp = self.http.post(
                 f"{self.state.backend_url}/sessions/{self.state.session_id}/change-model",
@@ -138,40 +321,41 @@ class PoeCoderCLI:
             )
             resp.raise_for_status()
             updated = resp.json()
-            print(self.style.ok(f"Session model changed to {updated['active_model']}"))
+            self.state.active_model = updated.get("active_model")
+            print(self.style.ok(self._t("msg.session_model_changed", model=updated["active_model"])))
             return False
         if cmd == "/balance":
             if self.direct:
-                print(self.style.warn("Balance requires backend mode."))
+                print(self.style.warn(self._t("msg.balance_backend_only")))
                 return False
             resp = self.http.get(f"{self.state.backend_url}/usage/current_balance")
             resp.raise_for_status()
             data = resp.json()
             points = data.get("current_point_balance")
-            print(self.style.info(f"Current balance: {points} points"))
+            print(self.style.info(self._t("msg.current_balance", points=points)))
             return False
         if cmd == "/context" and len(parts) >= 3:
             key = parts[1]
             try:
                 value = json.loads(" ".join(parts[2:]))
             except json.JSONDecodeError:
-                print(self.style.warn("Context value must be valid JSON"))
+                print(self.style.warn(self._t("msg.context_json_invalid")))
                 return False
             if self.direct:
                 self.state.local_context[key] = value
-                print(self.style.ok("Local context updated."))
+                print(self.style.ok(self._t("msg.local_context_updated")))
                 return False
             self.http.put(
                 f"{self.state.backend_url}/sessions/{self.state.session_id}/context",
                 json={"key": key, "value": value, "scope": "pinned"},
             ).raise_for_status()
-            print(self.style.ok("Context stored."))
+            print(self.style.ok(self._t("msg.context_stored")))
             return False
         if cmd == "/memory" and len(parts) >= 3:
             scope = parts[1]
             text = " ".join(parts[2:])
             if self.direct:
-                print(self.style.warn("Memory API requires backend mode."))
+                print(self.style.warn(self._t("msg.memory_backend_only")))
                 return False
             payload = {
                 "scope": scope,
@@ -182,23 +366,23 @@ class PoeCoderCLI:
                 "tags": [],
             }
             self.http.post(f"{self.state.backend_url}/memory/write", json=payload).raise_for_status()
-            print(self.style.ok("Memory stored."))
+            print(self.style.ok(self._t("msg.memory_stored")))
             return False
         if cmd == "/wiki" and len(parts) >= 3:
             topic = parts[1]
             text = " ".join(parts[2:])
             if self.direct:
-                print(self.style.warn("Wiki API requires backend mode."))
+                print(self.style.warn(self._t("msg.wiki_backend_only")))
                 return False
             self.http.post(
                 f"{self.state.backend_url}/wiki/ingest",
                 json={"project_id": self.state.project_id, "topic": topic, "content": text, "source": "cli"},
             ).raise_for_status()
-            print(self.style.ok("Wiki updated."))
+            print(self.style.ok(self._t("msg.wiki_updated")))
             return False
         if cmd == "/subagent" and len(parts) >= 4:
             if self.direct:
-                print(self.style.warn("Subagent API requires backend mode."))
+                print(self.style.warn(self._t("msg.subagent_backend_only")))
                 return False
             model = parts[1]
             perm = parts[2]
@@ -210,16 +394,99 @@ class PoeCoderCLI:
                     "model": model,
                     "perm": perm,
                     "prompt": prompt,
+                    "images": self._consume_pending_images(),
                     "context_share": [],
                 },
             )
             resp.raise_for_status()
             data = resp.json()
-            print(self.style.ok(f"Subagent started: {data['id']}"))
+            print(self.style.ok(self._t("msg.subagent_started", id=data["id"])))
+            return False
+        if cmd == "/bgturn" and len(parts) >= 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.task_backend_only")))
+                return False
+            prompt = raw[len("/bgturn") :].strip()
+            resp = self.http.post(
+                f"{self.state.backend_url}/tasks/turns/start",
+                json={
+                    "session_id": self.state.session_id,
+                    "user_prompt": prompt,
+                    "system_message": self.state.system_message or None,
+                    "images": self._consume_pending_images(),
+                    "context_keys": [],
+                    "metadata": {},
+                },
+            )
+            resp.raise_for_status()
+            task = resp.json()
+            print(self.style.ok(self._t("msg.task_started", id=task["id"])))
+            return False
+        if cmd == "/bgsubagent" and len(parts) >= 4:
+            if self.direct:
+                print(self.style.warn(self._t("msg.task_backend_only")))
+                return False
+            model = parts[1]
+            perm = parts[2]
+            prompt = " ".join(parts[3:])
+            resp = self.http.post(
+                f"{self.state.backend_url}/tasks/subagents/start",
+                json={
+                    "parent_session_id": self.state.session_id,
+                    "model": model,
+                    "perm": perm,
+                    "prompt": prompt,
+                    "images": self._consume_pending_images(),
+                    "context_share": [],
+                    "wait_timeout_s": 600,
+                },
+            )
+            resp.raise_for_status()
+            task = resp.json()
+            print(self.style.ok(self._t("msg.task_started", id=task["id"])))
+            return False
+        if cmd == "/tasks":
+            if self.direct:
+                print(self.style.warn(self._t("msg.task_backend_only")))
+                return False
+            params: dict[str, str] = {"limit": "20"}
+            if len(parts) >= 2:
+                params["state"] = parts[1]
+            resp = self.http.get(f"{self.state.backend_url}/tasks", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            self._render_task_list(data)
+            return False
+        if cmd == "/task" and len(parts) == 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.task_backend_only")))
+                return False
+            task_id = parts[1]
+            resp = self.http.get(f"{self.state.backend_url}/tasks/{task_id}")
+            resp.raise_for_status()
+            self._render_task_detail(resp.json())
+            return False
+        if cmd in {"/readtaskoutput", "/taskoutput"} and len(parts) == 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.task_backend_only")))
+                return False
+            task_id = parts[1]
+            resp = self.http.get(f"{self.state.backend_url}/tasks/{task_id}/output")
+            resp.raise_for_status()
+            self._render_task_output(resp.json())
+            return False
+        if cmd == "/canceltask" and len(parts) == 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.task_backend_only")))
+                return False
+            task_id = parts[1]
+            resp = self.http.post(f"{self.state.backend_url}/tasks/{task_id}/cancel")
+            resp.raise_for_status()
+            self._render_task_detail(resp.json())
             return False
         if cmd == "/shell" and len(parts) >= 3:
             if self.direct:
-                print(self.style.warn("Shell API requires backend mode."))
+                print(self.style.warn(self._t("msg.shell_backend_only")))
                 return False
             danger = int(parts[1])
             command = " ".join(parts[2:])
@@ -237,7 +504,7 @@ class PoeCoderCLI:
             print(json.dumps(data, indent=2, ensure_ascii=True))
             return False
 
-        print(self.style.warn("Unknown command. Use /help"))
+        print(self.style.warn(self._t("msg.unknown_command")))
         return False
 
     def _ensure_session(self, mode: str) -> None:
@@ -246,14 +513,17 @@ class PoeCoderCLI:
             json={"mode": mode, "project_id": self.state.project_id, "policy_profile": "research"},
         )
         resp.raise_for_status()
-        self.state.session_id = resp.json()["id"]
-        print(self.style.dim(f"session={self.state.session_id}"))
+        data = resp.json()
+        self.state.session_id = data["id"]
+        self.state.active_model = data.get("active_model")
+        print(self.style.dim(self._t("msg.session_id", session_id=self.state.session_id)))
 
-    async def _run_backend_turn(self, prompt: str) -> None:
+    async def _run_backend_turn(self, prompt: str, images: list[str] | None = None) -> None:
         payload = {
             "session_id": self.state.session_id,
             "user_prompt": prompt,
             "system_message": self.state.system_message or None,
+            "images": images or [],
             "context_keys": [],
             "metadata": {},
         }
@@ -272,18 +542,22 @@ class PoeCoderCLI:
                 etype = event.get("type")
                 data = event.get("data")
                 if etype == "status":
-                    print(self.style.dim(f"[{data}]"))
+                    status_key = str(data)
+                    label = self._t(f"status.{status_key}")
+                    if label.startswith("status."):
+                        label = status_key
+                    print(self.style.dim(f"[{label}]"))
                     continue
                 if etype == "model":
-                    print(self.style.info(f"model={data.get('model')}"))
+                    print(self.style.info(self._t("stream.model", model=data.get("model"))))
                     continue
                 if etype == "tool":
                     name = data.get("name", "tool")
-                    print(self.style.info(f"tool:{name}"))
+                    print(self.style.info(self._t("stream.tool", name=name)))
                     continue
                 if etype == "delta":
                     if not saw_delta:
-                        print(self.style.title("assistant> "), end="")
+                        print(self.style.title(self._t("stream.assistant")), end="")
                         saw_delta = True
                     print(data, end="", flush=True)
                     continue
@@ -291,20 +565,31 @@ class PoeCoderCLI:
                     if saw_delta:
                         print()
                         meta = data if isinstance(data, dict) else {}
-                        print(self.style.dim(f"done model={meta.get('model')} tools={len(meta.get('tool_events', []))}"))
+                        if meta.get("model"):
+                            self.state.active_model = str(meta.get("model"))
+                        print(
+                            self.style.dim(
+                                self._t(
+                                    "stream.done",
+                                    model=meta.get("model"),
+                                    tools=len(meta.get("tool_events", [])),
+                                )
+                            )
+                        )
                     else:
                         text = data.get("output_text", "") if isinstance(data, dict) else ""
                         print(text)
                     continue
 
-    async def _run_direct_turn(self, prompt: str) -> None:
+    async def _run_direct_turn(self, prompt: str, images: list[str] | None = None) -> None:
         reply = await self.direct_model_client.chat(
             model=self.model,
             system_message=self.state.system_message,
             user_prompt=prompt,
             context=self.state.local_context,
+            images=images or [],
         )
-        print(self.style.title("assistant> ") + reply.text)
+        print(self.style.title(self._t("stream.assistant")) + reply.text)
 
 
 def main() -> None:
@@ -312,9 +597,10 @@ def main() -> None:
     parser.add_argument("--backend-url", default="http://127.0.0.1:8765")
     parser.add_argument("--direct", action="store_true", help="Call model directly without backend")
     parser.add_argument("--model", default=None)
+    parser.add_argument("--lang", default=None, help="CLI language: en or zh-cn")
     args = parser.parse_args()
 
-    cli = PoeCoderCLI(backend_url=args.backend_url, direct=args.direct, model=args.model)
+    cli = PoeCoderCLI(backend_url=args.backend_url, direct=args.direct, model=args.model, lang=args.lang)
     cli.start()
 
 

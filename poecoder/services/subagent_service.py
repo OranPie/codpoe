@@ -29,17 +29,19 @@ class SubagentService:
         perm: str,
         prompt: str,
         context_share: list[str],
+        images: list[str] | None = None,
         system_message_modifier: str | None = None,
     ) -> dict[str, Any]:
         self.model_catalog.ensure_supported(model)
         agent_id = str(uuid.uuid4())
         now = utcnow_iso()
+        image_list = list(images or [])
         self.db.execute(
             """
-            INSERT INTO subagents(id, parent_session_id, model, perm, prompt, shared_context_json, state, result, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            INSERT INTO subagents(id, parent_session_id, model, perm, prompt, images_json, shared_context_json, state, result, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             """,
-            (agent_id, parent_session_id, model, perm, prompt, dumps(context_share), "running", now, now),
+            (agent_id, parent_session_id, model, perm, prompt, dumps(image_list), dumps(context_share), "running", now, now),
         )
         self._system_messages[agent_id] = compose_subagent_system_message(perm, system_message_modifier)
         task = asyncio.create_task(self._run(agent_id))
@@ -73,6 +75,7 @@ class SubagentService:
             "model": row["model"],
             "perm": row["perm"],
             "prompt": row["prompt"],
+            "images": loads(row["images_json"]) if row["images_json"] else [],
             "state": row["state"],
             "result": row["result"],
             "shared_context": loads(row["shared_context_json"]),
@@ -97,6 +100,7 @@ class SubagentService:
                 system_message=system_message,
                 user_prompt=row["prompt"],
                 context=context,
+                images=loads(row["images_json"]) if row["images_json"] else [],
             )
             self._set_state(agent_id, "completed", reply.text)
         except asyncio.CancelledError:

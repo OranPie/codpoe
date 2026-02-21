@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS subagents (
     model TEXT NOT NULL,
     perm TEXT NOT NULL,
     prompt TEXT NOT NULL,
+    images_json TEXT NOT NULL DEFAULT '[]',
     shared_context_json TEXT NOT NULL,
     state TEXT NOT NULL,
     result TEXT,
@@ -98,6 +99,19 @@ CREATE TABLE IF NOT EXISTS tmp_writes (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS background_tasks (
+    id TEXT PRIMARY KEY,
+    task_type TEXT NOT NULL,
+    state TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_background_tasks_state_time ON background_tasks(state, updated_at);
+
 CREATE INDEX IF NOT EXISTS idx_memory_scope_project ON memory_entries(scope, project_id);
 CREATE INDEX IF NOT EXISTS idx_wiki_project_topic ON wiki_docs(project_id, topic);
 CREATE INDEX IF NOT EXISTS idx_tool_audit_name_time ON tool_audit(tool_name, created_at);
@@ -112,7 +126,24 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
         self._conn.executescript(SCHEMA_SQL)
+        self._run_migrations()
         self._conn.commit()
+
+    def _run_migrations(self) -> None:
+        self._ensure_column(
+            table="subagents",
+            column="images_json",
+            definition="TEXT NOT NULL DEFAULT '[]'",
+        )
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row[1] for row in rows}
+        if column in existing:
+            return
+        self._conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        )
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

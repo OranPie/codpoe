@@ -36,7 +36,9 @@ from poecoder.models import (
     ReadRawRequest,
     ReadRecursiveRequest,
     ReadStructRequest,
+    ReadTaskOutputRequest,
     ToolCall,
+    TaskStartSubagentRequest,
 )
 
 STATE: AppState | None = None
@@ -130,6 +132,63 @@ async def turn_execute_stream(req: TurnRequest) -> StreamingResponse:
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
+
+
+
+@app.post("/tasks/turns/start")
+async def task_start_turn(req: TurnRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        task = await state.tasks.start_turn(req)
+        return task.model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/tasks/subagents/start")
+async def task_start_subagent(req: TaskStartSubagentRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        task = await state.tasks.start_subagent(req)
+        return task.model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/tasks")
+def task_list(limit: int = 50, state: str | None = None, task_type: str | None = None) -> list[dict[str, Any]]:
+    store = get_state().tasks
+    tasks = store.list(limit=limit, state=state, task_type=task_type)
+    return [item.model_dump(mode="json") for item in tasks]
+
+
+@app.get("/tasks/{task_id}")
+def task_get(task_id: str) -> dict[str, Any]:
+    store = get_state().tasks
+    try:
+        return store.get(task_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/tasks/{task_id}/output")
+def task_get_output(task_id: str) -> dict[str, Any]:
+    store = get_state().tasks
+    try:
+        return store.read_output(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/tasks/{task_id}/cancel")
+def task_cancel(task_id: str) -> dict[str, Any]:
+    store = get_state().tasks
+    try:
+        return store.cancel(task_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 @app.post("/memory/write")
 def memory_write(req: MemoryWriteRequest) -> dict[str, Any]:
@@ -228,6 +287,7 @@ def subagent_start(req: SubagentStartRequest) -> dict[str, Any]:
             perm=req.perm,
             prompt=req.prompt,
             context_share=req.context_share,
+            images=req.images,
             system_message_modifier=req.system_message_modifier,
         )
     except ValueError as exc:
@@ -366,6 +426,15 @@ async def tool_get_web_file(req: GetWebFileRequest) -> dict[str, Any]:
         timeout_s=req.timeout_s,
         max_bytes=req.max_bytes,
     )
+
+
+@app.post("/tools/read_task_output")
+def tool_read_task_output(req: ReadTaskOutputRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        return state.tasks.read_output(req.task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 @app.post("/tools/tmp_write")
 def tool_tmp_write(req: TmpWriteRequest) -> dict[str, Any]:

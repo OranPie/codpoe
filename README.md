@@ -26,6 +26,8 @@ PoeCoder is a Python coding assistant runtime with:
 
 - `/listmodels` to inspect supported models.
 - `/changemodel <name|auto>` to switch main model during a session.
+- `/plan` to switch to planning mode with planning-focused system message.
+- `/image <path|url>`, `/images`, `/clearimages` for image attachments on the next request.
 
 - Web tools: `GetWebRaw`, `GetWeb`, and `GetWebFile` are exposed via `/tools/invoke` and dedicated API routes.
 
@@ -34,3 +36,10 @@ PoeCoder is a Python coding assistant runtime with:
 
 - Base main/subagent system prompts live in `poecoder/prompts.py`.
 - `StartSubAgent` supports `system_message_modifier` so the main model can shape subagent behavior safely.
+
+- CLI i18n: set `POECODER_LANG=zh-cn` or run `poecoder --lang zh-cn` (you can also switch live with `/lang zh-cn`).
+
+- Background tasks: `/bgturn`, `/bgsubagent`, `/tasks`, `/task`, `/canceltask`.
+- Task output shortcuts: `/readtaskoutput <task_id>` and API `GET /tasks/{task_id}/output`.
+- Model tools now support async task orchestration: `StartBackgroundTurn`, `StartBackgroundSubAgent`, `ReadTaskOutput`.
+- Turn streaming now uses model chunk streaming for lower latency (`delta` events are emitted as chunks arrive).

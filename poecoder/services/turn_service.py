@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from poecoder.models import TurnRequest, TurnResult
+from poecoder.prompts import default_system_message_for_mode
 from poecoder.router import ModelRouter
 from poecoder.services.memory_service import MemoryReadRequest, MemoryService
 from poecoder.services.model_catalog import ModelCatalog
 from poecoder.services.model_clients import PoeModelClient
 from poecoder.services.session_service import SessionService
 from poecoder.tools.runtime import ToolRuntime, parse_tool_calls
-from poecoder.prompts import MAIN_SYSTEM_MESSAGE
 
 
 @dataclass(slots=True)
@@ -25,6 +25,114 @@ class TurnService:
     model_catalog: ModelCatalog
 
     async def execute(self, req: TurnRequest) -> TurnResult:
+        session, context, model, system_message, decision = self._prepare_turn(req)
+
+        first = await self.model_client.chat(
+            model=model,
+            system_message=system_message,
+            user_prompt=req.user_prompt,
+            context=context,
+            images=req.images,
+        )
+
+        tool_calls = parse_tool_calls(first.text)
+        tool_events: list[dict[str, Any]] = []
+        output_text = first.text
+
+        if tool_calls:
+            for call in tool_calls:
+                self._inject_default_tool_args(session.id, call)
+                result = await self.tools.invoke("model", call["name"], call["args"])
+                tool_events.append({"name": call["name"], "args": call["args"], "result": result})
+                self.sessions.put_context(session.id, f"tool:{call['name']}", result, scope="turn")
+
+            second_prompt = (
+                req.user_prompt
+                + "\n\nTool results:\n"
+                + json.dumps(tool_events, ensure_ascii=True)
+                + "\nSynthesize final answer."
+            )
+            second = await self.model_client.chat(
+                model=model,
+                system_message=system_message,
+                user_prompt=second_prompt,
+                context=context,
+                images=req.images,
+            )
+            output_text = second.text
+
+        self._finalize_turn(session.id, decision, req.user_prompt, output_text)
+        return TurnResult(
+            session_id=session.id,
+            model=model,
+            output_text=output_text,
+            tool_events=tool_events,
+        )
+
+    async def execute_stream(self, req: TurnRequest) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "status", "data": "routing"}
+        await asyncio.sleep(0)
+
+        session, context, model, system_message, decision = self._prepare_turn(req)
+        yield {"type": "model", "data": {"model": model}}
+
+        # First response stream (low latency path)
+        first_chunks: list[str] = []
+        yield {"type": "status", "data": "responding"}
+        async for chunk in self.model_client.chat_stream(
+            model=model,
+            system_message=system_message,
+            user_prompt=req.user_prompt,
+            context=context,
+            images=req.images,
+        ):
+            first_chunks.append(chunk)
+            yield {"type": "delta", "data": chunk}
+
+        first_text = "".join(first_chunks)
+        tool_calls = parse_tool_calls(first_text)
+        tool_events: list[dict[str, Any]] = []
+        output_text = first_text
+
+        if tool_calls:
+            yield {"type": "status", "data": "tools"}
+            for call in tool_calls:
+                self._inject_default_tool_args(session.id, call)
+                result = await self.tools.invoke("model", call["name"], call["args"])
+                tool_event = {"name": call["name"], "args": call["args"], "result": result}
+                tool_events.append(tool_event)
+                self.sessions.put_context(session.id, f"tool:{call['name']}", result, scope="turn")
+                yield {"type": "tool", "data": tool_event}
+
+            second_prompt = (
+                req.user_prompt
+                + "\n\nTool results:\n"
+                + json.dumps(tool_events, ensure_ascii=True)
+                + "\nSynthesize final answer."
+            )
+            output_text = ""
+            yield {"type": "status", "data": "responding"}
+            async for chunk in self.model_client.chat_stream(
+                model=model,
+                system_message=system_message,
+                user_prompt=second_prompt,
+                context=context,
+                images=req.images,
+            ):
+                output_text += chunk
+                yield {"type": "delta", "data": chunk}
+
+        self._finalize_turn(session.id, decision, req.user_prompt, output_text)
+
+        final = TurnResult(
+            session_id=session.id,
+            model=model,
+            output_text=output_text,
+            tool_events=tool_events,
+        )
+        yield {"type": "final", "data": final.model_dump(mode="json")}
+
+    def _prepare_turn(self, req: TurnRequest) -> tuple[Any, dict[str, Any], str, str, Any]:
         session = self.sessions.get(req.session_id)
         self.sessions.reset_for_turn(session)
 
@@ -46,73 +154,27 @@ class TurnService:
             if available:
                 model = available[0]
 
-        system_message = req.system_message or MAIN_SYSTEM_MESSAGE
-        first = await self.model_client.chat(
-            model=model,
-            system_message=system_message,
-            user_prompt=req.user_prompt,
-            context=context,
-        )
-
-        tool_calls = parse_tool_calls(first.text)
-        tool_events: list[dict[str, Any]] = []
-        output_text = first.text
-
-        if tool_calls:
-            for call in tool_calls:
-                if call["name"] == "ChangeModel" and "session_id" not in call["args"]:
-                    call["args"]["session_id"] = session.id
-                result = await self.tools.invoke("model", call["name"], call["args"])
-                tool_events.append({"name": call["name"], "args": call["args"], "result": result})
-                self.sessions.put_context(session.id, f"tool:{call['name']}", result, scope="turn")
-
-            second_prompt = (
-                req.user_prompt
-                + "\n\nTool results:\n"
-                + json.dumps(tool_events, ensure_ascii=True)
-                + "\nSynthesize final answer."
-            )
-            second = await self.model_client.chat(
-                model=model,
-                system_message=system_message,
-                user_prompt=second_prompt,
-                context=context,
-            )
-            output_text = second.text
-
-        self.sessions.put_context(session.id, "router_decision", decision.model_dump(mode="json"), scope="turn")
-        self.sessions.put_context(session.id, "last_user_prompt", req.user_prompt, scope="turn")
-        self.sessions.put_context(session.id, "last_model_output", output_text, scope="turn")
-        self.sessions.touch(session.id)
-
-        return TurnResult(
-            session_id=session.id,
-            model=model,
-            output_text=output_text,
-            tool_events=tool_events,
-        )
-
-    async def execute_stream(self, req: TurnRequest) -> AsyncIterator[dict[str, Any]]:
-        yield {"type": "status", "data": "routing"}
-        await asyncio.sleep(0)
-        result = await self.execute(req)
-        yield {"type": "model", "data": {"model": result.model}}
-
-        if result.tool_events:
-            yield {"type": "status", "data": "tools"}
-        for event in result.tool_events:
-            yield {"type": "tool", "data": event}
-
-        yield {"type": "status", "data": "responding"}
-        for chunk in self._chunk_text(result.output_text, size=64):
-            yield {"type": "delta", "data": chunk}
-        yield {"type": "final", "data": result.model_dump(mode="json")}
+        system_message = req.system_message or default_system_message_for_mode(session.mode)
+        return session, context, model, system_message, decision
 
     @staticmethod
-    def _chunk_text(text: str, size: int = 64) -> list[str]:
-        if not text:
-            return []
-        return [text[i : i + size] for i in range(0, len(text), size)]
+    def _inject_default_tool_args(session_id: str, call: dict[str, Any]) -> None:
+        name = call.get("name")
+        args = call.get("args", {})
+        if not isinstance(args, dict):
+            return
+        if name == "ChangeModel" and "session_id" not in args:
+            args["session_id"] = session_id
+        if name == "StartBackgroundTurn" and "session_id" not in args:
+            args["session_id"] = session_id
+        if name == "StartBackgroundSubAgent" and "parent_session_id" not in args:
+            args["parent_session_id"] = session_id
+
+    def _finalize_turn(self, session_id: str, decision: Any, user_prompt: str, output_text: str) -> None:
+        self.sessions.put_context(session_id, "router_decision", decision.model_dump(mode="json"), scope="turn")
+        self.sessions.put_context(session_id, "last_user_prompt", user_prompt, scope="turn")
+        self.sessions.put_context(session_id, "last_model_output", output_text, scope="turn")
+        self.sessions.touch(session_id)
 
     def _load_memory(self, session_id: str, project_id: str) -> dict[str, list[dict[str, Any]]]:
         session_entries = self.memories.read(

@@ -15,6 +15,7 @@ from poecoder.services.model_clients import PoeModelClient
 from poecoder.services.session_service import SessionService
 from poecoder.services.shell_service import ShellService
 from poecoder.services.subagent_service import SubagentService
+from poecoder.services.task_service import TaskService
 from poecoder.services.turn_service import TurnService
 from poecoder.services.usage_service import UsageService
 from poecoder.services.wiki_service import WikiService
@@ -38,6 +39,7 @@ class AppState:
     usage: UsageService
     tools: ToolRuntime
     turns: TurnService
+    tasks: TaskService
 
 
 
@@ -84,6 +86,8 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         tools=tools,
         model_catalog=model_catalog,
     )
+    tasks = TaskService(db=db, turns=turns, subagents=subagents)
+    tools.task_service = tasks
     return AppState(
         settings=settings,
         db=db,
@@ -98,4 +102,5 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         usage=usage,
         tools=tools,
         turns=turns,
+        tasks=tasks,
     )

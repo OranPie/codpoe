@@ -15,6 +15,7 @@ class Settings:
     host: str
     port: int
     supported_models: list[str]
+    lang: str
 
 
 
@@ -48,4 +49,5 @@ def get_settings() -> Settings:
         host=os.environ.get("POECODER_HOST", "127.0.0.1"),
         port=int(os.environ.get("POECODER_PORT", "8765")),
         supported_models=supported,
+        lang=os.environ.get("POECODER_LANG", "en"),
     )

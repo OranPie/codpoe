@@ -43,6 +43,7 @@ class TurnRequest(BaseModel):
     user_prompt: str
     system_message: str | None = None
     direct_model: bool = False
+    images: list[str] = Field(default_factory=list)
     context_keys: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -148,6 +149,7 @@ class SubagentStartRequest(BaseModel):
     model: str
     perm: Literal["readonly", "standard", "privileged"] = "readonly"
     prompt: str
+    images: list[str] = Field(default_factory=list)
     context_share: list[str] = Field(default_factory=list)
     system_message_modifier: str | None = None
 
@@ -159,6 +161,7 @@ class SubagentResponse(BaseModel):
     perm: str
     state: SubagentState
     prompt: str
+    images: list[str] = Field(default_factory=list)
     result: str | None
     created_at: datetime
     updated_at: datetime
@@ -235,6 +238,27 @@ class GetWebFileRequest(BaseModel):
     overwrite: bool = False
     timeout_s: int = 60
     max_bytes: int = 20000000
+
+
+
+class TaskStartSubagentRequest(SubagentStartRequest):
+    wait_timeout_s: int = 600
+
+
+class TaskView(BaseModel):
+    id: str
+    task_type: str
+    state: str
+    payload: dict[str, Any]
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReadTaskOutputRequest(BaseModel):
+    task_id: str
+
 
 class ToolCall(BaseModel):
     name: str
