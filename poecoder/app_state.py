@@ -12,6 +12,8 @@ from poecoder.services.command_service import CommandService
 from poecoder.services.memory_service import MemoryService
 from poecoder.services.model_catalog import ModelCatalog
 from poecoder.services.model_clients import PoeModelClient
+from poecoder.services.model_profile_service import ModelProfileService
+from poecoder.services.review_service import ReviewService
 from poecoder.services.session_service import SessionService
 from poecoder.services.shell_service import ShellService
 from poecoder.services.subagent_service import SubagentService
@@ -36,7 +38,9 @@ class AppState:
     shell: ShellService
     audit: AuditService
     model_catalog: ModelCatalog
+    model_profiles: ModelProfileService
     usage: UsageService
+    reviews: ReviewService
     tools: ToolRuntime
     turns: TurnService
     tasks: TaskService
@@ -51,6 +55,8 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
     model_client = PoeModelClient(settings.poe_api_url, settings.poe_api_key)
     router = ModelRouter(settings.default_small_model, settings.default_large_model)
     model_catalog = ModelCatalog(settings.supported_models, api_key=settings.poe_api_key)
+    model_profiles = ModelProfileService(db=db)
+    model_profiles.ensure_seeded(model_catalog.list_models(refresh=False))
 
     sessions = SessionService(db=db, default_model=settings.default_large_model)
     memories = MemoryService(db=db)
@@ -59,6 +65,15 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
     audit = AuditService(db=db)
     shell = ShellService(policy=policy, sessions=sessions)
     usage = UsageService(api_key=settings.poe_api_key)
+    reviews = ReviewService(
+        sessions=sessions,
+        model_client=model_client,
+        model_catalog=model_catalog,
+        default_model=settings.reviewer_model,
+        default_thinking_level=settings.reviewer_thinking_level,
+        default_thinking_budget=settings.reviewer_thinking_budget,
+        command_catalog_provider=lambda: [],
+    )
 
     root = workspace_root or Path.cwd()
     code_tools = CodeTools(root=root.resolve())
@@ -77,7 +92,9 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         model_catalog=model_catalog,
         web_tools=web_tools,
         usage_service=usage,
+        review_service=reviews,
     )
+    reviews.command_catalog_provider = tools.command_catalog
     turns = TurnService(
         sessions=sessions,
         memories=memories,
@@ -85,6 +102,7 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         router=router,
         tools=tools,
         model_catalog=model_catalog,
+        model_profiles=model_profiles,
     )
     tasks = TaskService(db=db, turns=turns, subagents=subagents)
     tools.task_service = tasks
@@ -99,7 +117,9 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         shell=shell,
         audit=audit,
         model_catalog=model_catalog,
+        model_profiles=model_profiles,
         usage=usage,
+        reviews=reviews,
         tools=tools,
         turns=turns,
         tasks=tasks,

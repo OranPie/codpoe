@@ -12,6 +12,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     mode TEXT NOT NULL,
     active_model TEXT NOT NULL,
+    thinking_level TEXT NOT NULL DEFAULT 'balanced',
+    thinking_budget INTEGER NOT NULL DEFAULT 12000,
+    allow_model_command_create INTEGER NOT NULL DEFAULT 1,
+    encourage_model_command_create INTEGER NOT NULL DEFAULT 1,
     policy_profile TEXT NOT NULL,
     project_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -112,6 +116,20 @@ CREATE TABLE IF NOT EXISTS background_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_background_tasks_state_time ON background_tasks(state, updated_at);
 
+CREATE TABLE IF NOT EXISTS model_profiles (
+    model TEXT PRIMARY KEY,
+    strategy TEXT NOT NULL,
+    best_for TEXT NOT NULL,
+    speed_tier INTEGER NOT NULL,
+    quality_tier INTEGER NOT NULL,
+    cost_tier INTEGER NOT NULL,
+    max_context_hint INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_profiles_speed_quality ON model_profiles(speed_tier, quality_tier);
+
 CREATE INDEX IF NOT EXISTS idx_memory_scope_project ON memory_entries(scope, project_id);
 CREATE INDEX IF NOT EXISTS idx_wiki_project_topic ON wiki_docs(project_id, topic);
 CREATE INDEX IF NOT EXISTS idx_tool_audit_name_time ON tool_audit(tool_name, created_at);
@@ -130,6 +148,26 @@ class Database:
         self._conn.commit()
 
     def _run_migrations(self) -> None:
+        self._ensure_column(
+            table="sessions",
+            column="thinking_level",
+            definition="TEXT NOT NULL DEFAULT 'balanced'",
+        )
+        self._ensure_column(
+            table="sessions",
+            column="thinking_budget",
+            definition="INTEGER NOT NULL DEFAULT 12000",
+        )
+        self._ensure_column(
+            table="sessions",
+            column="allow_model_command_create",
+            definition="INTEGER NOT NULL DEFAULT 1",
+        )
+        self._ensure_column(
+            table="sessions",
+            column="encourage_model_command_create",
+            definition="INTEGER NOT NULL DEFAULT 1",
+        )
         self._ensure_column(
             table="subagents",
             column="images_json",

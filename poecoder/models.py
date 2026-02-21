@@ -14,6 +14,10 @@ SubagentState = Literal["running", "completed", "cancelled", "failed"]
 class SessionCreateRequest(BaseModel):
     mode: Mode = "coding"
     active_model: str | None = "auto"
+    thinking_level: Literal["quick", "balanced", "deep"] = "balanced"
+    thinking_budget: int = Field(default=12000, ge=100, le=500000)
+    allow_model_command_create: bool = True
+    encourage_model_command_create: bool = True
     policy_profile: str = "default"
     project_id: str = "default"
 
@@ -22,6 +26,10 @@ class SessionResponse(BaseModel):
     id: str
     mode: Mode
     active_model: str
+    thinking_level: Literal["quick", "balanced", "deep"] = "balanced"
+    thinking_budget: int = 12000
+    allow_model_command_create: bool = True
+    encourage_model_command_create: bool = True
     policy_profile: str
     project_id: str
     created_at: datetime
@@ -38,12 +46,25 @@ class ContextPutRequest(BaseModel):
 class ChangeModelRequest(BaseModel):
     model: str
 
+
+class SessionThinkingRequest(BaseModel):
+    thinking_level: Literal["quick", "balanced", "deep"]
+    thinking_budget: int = Field(ge=100, le=500000)
+
+
+class SessionCommandPolicyRequest(BaseModel):
+    allow_model_command_create: bool
+    encourage_model_command_create: bool
+
+
 class TurnRequest(BaseModel):
     session_id: str
     user_prompt: str
     system_message: str | None = None
     direct_model: bool = False
     images: list[str] = Field(default_factory=list)
+    thinking_level: Literal["quick", "balanced", "deep"] | None = None
+    thinking_budget: int | None = Field(default=None, ge=100, le=500000)
     context_keys: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -258,6 +279,42 @@ class TaskView(BaseModel):
 
 class ReadTaskOutputRequest(BaseModel):
     task_id: str
+
+
+class ReviewRequest(BaseModel):
+    session_id: str
+    prompt: str
+    context_keys: list[str] = Field(default_factory=list)
+    model: str | None = None
+    thinking_level: Literal["quick", "balanced", "deep"] | None = None
+    thinking_budget: int | None = Field(default=None, ge=100, le=500000)
+
+
+class ReviewSettingsRequest(BaseModel):
+    model: str | None = None
+    thinking_level: Literal["quick", "balanced", "deep"] | None = None
+    thinking_budget: int | None = Field(default=None, ge=100, le=500000)
+
+
+class ModelProfileView(BaseModel):
+    model: str
+    strategy: str
+    best_for: str
+    speed_tier: int = Field(ge=1, le=5)
+    quality_tier: int = Field(ge=1, le=5)
+    cost_tier: int = Field(ge=1, le=5)
+    max_context_hint: int = Field(ge=1024)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelProfileUpsertRequest(BaseModel):
+    strategy: str
+    best_for: str
+    speed_tier: int = Field(ge=1, le=5)
+    quality_tier: int = Field(ge=1, le=5)
+    cost_tier: int = Field(ge=1, le=5)
+    max_context_hint: int = Field(ge=1024)
 
 
 class ToolCall(BaseModel):

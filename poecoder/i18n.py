@@ -17,16 +17,21 @@ Commands:
   /system <text>                      Set system message
   /mode <coding|chat|planning>        Start new backend session in mode
   /plan                               Switch to planning mode + planning system message
+  /thinking <quick|balanced|deep> [budget] Update thinking level and budget
+  /commandpolicy <allow|deny> [encourage|noencourage] Set model command autonomy
   /lang <en|zh-cn>                    Switch CLI language
   /image <path|url>                   Attach one image for next model/subagent request
   /images                             Show pending images
   /clearimages                        Clear pending images
   /listmodels                         List supported models
+  /modeltable                         Show model strategy table
   /changemodel <name|auto>            Change active main model
   /balance                            Fetch current Poe point balance
   /context <key> <json>               Store context key/value in backend session
   /memory <scope> <text>              Write memory entry (session|project|global)
   /wiki <topic> <text>                Add project wiki note
+  /review <prompt>                    Run reviewer role analysis
+  /reviewsettings [model level budget] Get or set reviewer defaults
   /subagent <model> <perm> <prompt>   Start subagent
   /bgturn <prompt>                    Start background turn task
   /bgsubagent <model> <perm> <prompt> Start background subagent task
@@ -38,14 +43,22 @@ Commands:
 """.strip(),
         "msg.system_updated": "System message updated.",
         "msg.mode_set": "Mode set to {mode}",
+        "msg.thinking_updated": "Thinking updated: level={level} budget={budget}",
+        "msg.invalid_number": "Invalid number",
+        "msg.invalid_thinking_level": "Invalid thinking level: {level}",
+        "msg.command_policy_updated": "Command policy updated: allow={allow} encourage={encourage}",
+        "msg.command_policy_usage": "Usage: /commandpolicy <allow|deny> [encourage|noencourage]",
         "msg.plan_mode_enabled": "Planning mode enabled with planning system message.",
         "msg.image_added": "Image queued. pending={count}",
         "msg.image_not_found": "Image file not found: {path}",
         "msg.images_empty": "No pending images.",
         "msg.images_cleared": "Pending images cleared.",
         "msg.models_header": "models ({count})",
+        "msg.model_table_empty": "No model profiles.",
+        "msg.modeltable_backend_only": "Model table requires backend mode.",
         "msg.direct_model_set": "Direct model set to {model}",
         "msg.session_model_changed": "Session model changed to {model}",
+        "msg.current_thinking": "thinking={level} budget={budget}",
         "msg.balance_backend_only": "Balance requires backend mode.",
         "msg.current_balance": "Current balance: {points} points",
         "msg.context_json_invalid": "Context value must be valid JSON",
@@ -57,6 +70,10 @@ Commands:
         "msg.wiki_updated": "Wiki updated.",
         "msg.subagent_backend_only": "Subagent API requires backend mode.",
         "msg.subagent_started": "Subagent started: {id}",
+        "msg.review_backend_only": "Review requires backend mode.",
+        "msg.review_header": "review model={model}",
+        "msg.review_settings_updated": "Reviewer settings updated.",
+        "msg.review_settings_usage": "Usage: /reviewsettings OR /reviewsettings <model> <quick|balanced|deep> <budget>",
         "msg.task_backend_only": "Background tasks require backend mode.",
         "msg.task_started": "Task started: {id}",
         "msg.task_list_header": "tasks ({count})",
@@ -85,6 +102,10 @@ Commands:
         "table.result": "result",
         "table.error": "error",
         "table.image": "image",
+        "table.strategy": "strategy",
+        "table.speed": "speed",
+        "table.quality": "quality",
+        "table.cost": "cost",
         "stream.model": "model={model}",
         "stream.tool": "tool:{name}",
         "stream.assistant": "assistant> ",
@@ -108,16 +129,21 @@ Commands:
   /system <text>                      设置系统提示词
   /mode <coding|chat|planning>        以指定模式创建后端会话
   /plan                               切换到规划模式并启用规划系统提示词
+  /thinking <quick|balanced|deep> [budget] 更新思考等级与预算
+  /commandpolicy <allow|deny> [encourage|noencourage] 设置模型命令自治策略
   /lang <en|zh-cn>                    切换 CLI 语言
   /image <path|url>                   为下一次模型/子代理请求添加一张图片
   /images                             查看待发送图片
   /clearimages                        清空待发送图片
   /listmodels                         列出可用模型
+  /modeltable                         查看模型策略表
   /changemodel <name|auto>            切换主模型
   /balance                            查询 Poe 当前点数余额
   /context <key> <json>               向后端会话保存上下文键值
   /memory <scope> <text>              写入记忆（session|project|global）
   /wiki <topic> <text>                添加项目 Wiki 记录
+  /review <prompt>                    启动审查员角色分析
+  /reviewsettings [model level budget] 查看或设置审查默认配置
   /subagent <model> <perm> <prompt>   启动子代理
   /bgturn <prompt>                    启动后台轮次任务
   /bgsubagent <model> <perm> <prompt> 启动后台子代理任务
@@ -129,14 +155,22 @@ Commands:
 """.strip(),
         "msg.system_updated": "系统提示词已更新。",
         "msg.mode_set": "模式已切换为 {mode}",
+        "msg.thinking_updated": "思考设置已更新：level={level} budget={budget}",
+        "msg.invalid_number": "数字格式无效",
+        "msg.invalid_thinking_level": "无效的思考等级：{level}",
+        "msg.command_policy_updated": "命令策略已更新：allow={allow} encourage={encourage}",
+        "msg.command_policy_usage": "用法：/commandpolicy <allow|deny> [encourage|noencourage]",
         "msg.plan_mode_enabled": "已切换到规划模式，并启用规划系统提示词。",
         "msg.image_added": "图片已加入队列。待发送={count}",
         "msg.image_not_found": "未找到图片文件：{path}",
         "msg.images_empty": "没有待发送图片。",
         "msg.images_cleared": "待发送图片已清空。",
         "msg.models_header": "模型列表（{count}）",
+        "msg.model_table_empty": "暂无模型画像。",
+        "msg.modeltable_backend_only": "模型策略表仅支持后端模式。",
         "msg.direct_model_set": "直连模式模型已设置为 {model}",
         "msg.session_model_changed": "会话模型已切换为 {model}",
+        "msg.current_thinking": "思考设置 level={level} budget={budget}",
         "msg.balance_backend_only": "余额查询仅支持后端模式。",
         "msg.current_balance": "当前余额：{points} 点",
         "msg.context_json_invalid": "上下文值必须是合法 JSON",
@@ -148,6 +182,10 @@ Commands:
         "msg.wiki_updated": "Wiki 已更新。",
         "msg.subagent_backend_only": "子代理功能仅支持后端模式。",
         "msg.subagent_started": "子代理已启动：{id}",
+        "msg.review_backend_only": "审查功能仅支持后端模式。",
+        "msg.review_header": "审查模型={model}",
+        "msg.review_settings_updated": "审查默认配置已更新。",
+        "msg.review_settings_usage": "用法：/reviewsettings 或 /reviewsettings <model> <quick|balanced|deep> <budget>",
         "msg.task_backend_only": "后台任务仅支持后端模式。",
         "msg.task_started": "任务已启动：{id}",
         "msg.task_list_header": "任务列表（{count}）",
@@ -176,6 +214,10 @@ Commands:
         "table.result": "结果",
         "table.error": "错误",
         "table.image": "图片",
+        "table.strategy": "策略",
+        "table.speed": "速度",
+        "table.quality": "质量",
+        "table.cost": "成本",
         "stream.model": "模型={model}",
         "stream.tool": "工具:{name}",
         "stream.assistant": "助手> ",

@@ -16,6 +16,7 @@ from poecoder.models import (
     CommandPatchRequest,
     ChangeModelRequest,
     ContextPutRequest,
+    ModelProfileUpsertRequest,
     MemoryEditRequest,
     MemoryReadRequest,
     MemoryWriteRequest,
@@ -37,6 +38,10 @@ from poecoder.models import (
     ReadRecursiveRequest,
     ReadStructRequest,
     ReadTaskOutputRequest,
+    ReviewRequest,
+    ReviewSettingsRequest,
+    SessionCommandPolicyRequest,
+    SessionThinkingRequest,
     ToolCall,
     TaskStartSubagentRequest,
 )
@@ -99,6 +104,28 @@ def list_models(refresh: bool = False) -> dict[str, Any]:
     return {"models": state.model_catalog.list_models(refresh=refresh)}
 
 
+@app.get("/models/table")
+def list_model_table() -> list[dict[str, Any]]:
+    state = get_state()
+    state.model_profiles.ensure_seeded(state.model_catalog.list_models(refresh=False))
+    return state.model_profiles.list()
+
+
+@app.put("/models/table/{model}")
+def upsert_model_table(model: str, req: ModelProfileUpsertRequest) -> dict[str, Any]:
+    state = get_state()
+    payload = req.model_dump(mode="json")
+    return state.model_profiles.upsert(
+        model=model,
+        strategy=payload["strategy"],
+        best_for=payload["best_for"],
+        speed_tier=payload["speed_tier"],
+        quality_tier=payload["quality_tier"],
+        cost_tier=payload["cost_tier"],
+        max_context_hint=payload["max_context_hint"],
+    )
+
+
 @app.post("/sessions/{session_id}/change-model")
 def change_model(session_id: str, req: ChangeModelRequest) -> dict[str, Any]:
     state = get_state()
@@ -111,6 +138,30 @@ def change_model(session_id: str, req: ChangeModelRequest) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+
+@app.post("/sessions/{session_id}/thinking")
+def session_update_thinking(session_id: str, req: SessionThinkingRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        updated = state.sessions.update_thinking(session_id, req.thinking_level, req.thinking_budget)
+        return updated.model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/sessions/{session_id}/command-policy")
+def session_update_command_policy(session_id: str, req: SessionCommandPolicyRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        updated = state.sessions.update_command_policy(
+            session_id=session_id,
+            allow_create=req.allow_model_command_create,
+            encourage_create=req.encourage_model_command_create,
+        )
+        return updated.model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
 @app.post("/turns/execute")
 async def turn_execute(req: TurnRequest) -> dict[str, Any]:
     state = get_state()
@@ -119,6 +170,36 @@ async def turn_execute(req: TurnRequest) -> dict[str, Any]:
         return result.model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/review")
+async def review(req: ReviewRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        return await state.reviews.run(req)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/review/settings")
+def review_settings_get() -> dict[str, Any]:
+    return get_state().reviews.get_settings()
+
+
+@app.post("/review/settings")
+def review_settings_update(req: ReviewSettingsRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        model = req.model
+        if model:
+            state.model_catalog.ensure_supported(model)
+        return state.reviews.update_settings(
+            model=model,
+            thinking_level=req.thinking_level,
+            thinking_budget=req.thinking_budget,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/turns/execute/stream")
@@ -340,10 +421,18 @@ async def tool_invoke(req: ToolCall, actor: str = "user") -> dict[str, Any]:
     try:
         result = await state.tools.invoke(actor=actor, name=req.name, args=req.args)
         return {"ok": True, "result": result}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/tools/catalog")
+def tool_catalog() -> list[dict[str, Any]]:
+    state = get_state()
+    return state.tools.command_catalog()
 
 @app.post("/tools/read_raw")
 def tool_read_raw(req: ReadRawRequest) -> dict[str, Any]:

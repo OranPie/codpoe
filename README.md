@@ -25,9 +25,13 @@ PoeCoder is a Python coding assistant runtime with:
 ## Notable CLI Commands
 
 - `/listmodels` to inspect supported models.
+- `/modeltable` to inspect/edit model strategy profiles used for auto model choice.
 - `/changemodel <name|auto>` to switch main model during a session.
 - `/plan` to switch to planning mode with planning-focused system message.
+- `/thinking <quick|balanced|deep> [budget]` to control model reasoning depth/token budget hints.
+- `/commandpolicy <allow|deny> [encourage|noencourage]` to control model self-command creation autonomy.
 - `/image <path|url>`, `/images`, `/clearimages` for image attachments on the next request.
+- `/review <prompt>` to run reviewer-role analysis (also exposed as tool `Review`).
 
 - Web tools: `GetWebRaw`, `GetWeb`, and `GetWebFile` are exposed via `/tools/invoke` and dedicated API routes.
 
@@ -42,4 +46,6 @@ PoeCoder is a Python coding assistant runtime with:
 - Background tasks: `/bgturn`, `/bgsubagent`, `/tasks`, `/task`, `/canceltask`.
 - Task output shortcuts: `/readtaskoutput <task_id>` and API `GET /tasks/{task_id}/output`.
 - Model tools now support async task orchestration: `StartBackgroundTurn`, `StartBackgroundSubAgent`, `ReadTaskOutput`.
+- `GET /tools/catalog` exposes the command/tool reference so the model can follow exact command names and args.
+- Context selection is relevance-ranked + compacted by default to reduce token waste while keeping important session context.
 - Turn streaming now uses model chunk streaming for lower latency (`delta` events are emitted as chunks arrive).

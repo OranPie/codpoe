@@ -394,4 +394,187 @@ def test_planning_mode_uses_plan_system_message(monkeypatch, tmp_path):
     session_id = session_resp.json()["id"]
     turn = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "plan this"})
     assert turn.status_code == 200
-    assert captured["system_message"] == PLAN_SYSTEM_MESSAGE
+    assert captured["system_message"].startswith(PLAN_SYSTEM_MESSAGE)
+
+
+def test_session_thinking_update(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    created = client.post("/sessions", json={"mode": "coding", "project_id": "demo"})
+    assert created.status_code == 200
+    session_id = created.json()["id"]
+
+    updated = client.post(
+        f"/sessions/{session_id}/thinking",
+        json={"thinking_level": "deep", "thinking_budget": 24000},
+    )
+    assert updated.status_code == 200
+    payload = updated.json()
+    assert payload["thinking_level"] == "deep"
+    assert payload["thinking_budget"] == 24000
+
+
+def test_session_command_policy_update(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+
+    updated = client.post(
+        f"/sessions/{session_id}/command-policy",
+        json={"allow_model_command_create": False, "encourage_model_command_create": False},
+    )
+    assert updated.status_code == 200
+    payload = updated.json()
+    assert payload["allow_model_command_create"] is False
+    assert payload["encourage_model_command_create"] is False
+
+
+def test_model_install_command_blocked_by_policy(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+    created = client.post(
+        "/sessions",
+        json={
+            "mode": "coding",
+            "project_id": "demo",
+            "allow_model_command_create": False,
+            "encourage_model_command_create": False,
+        },
+    )
+    session_id = created.json()["id"]
+    blocked = client.post(
+        "/tools/invoke",
+        params={"actor": "model"},
+        json={
+            "name": "InstallCommand",
+            "args": {
+                "session_id": session_id,
+                "name": "DemoCmd",
+                "definition": "echo hi",
+                "runtime": "sh",
+                "args_schema": {},
+                "effect_schema": {},
+                "capabilities": [],
+                "source": "model",
+                "signature": None,
+            },
+        },
+    )
+    assert blocked.status_code == 403
+
+
+def test_review_endpoint_and_tool(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def fake_review(self, req):
+        return {
+            "model": "assistant",
+            "thinking_level": "deep",
+            "thinking_budget": 12000,
+            "output_text": "review-ok",
+            "raw": {"mock": True},
+        }
+
+    monkeypatch.setattr(type(api.STATE.reviews), "run", fake_review)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+
+    endpoint = client.post("/review", json={"session_id": session_id, "prompt": "review this"})
+    assert endpoint.status_code == 200
+    assert endpoint.json()["output_text"] == "review-ok"
+
+    tool = client.post(
+        "/tools/invoke",
+        json={"name": "Review", "args": {"session_id": session_id, "prompt": "review this"}},
+    )
+    assert tool.status_code == 200
+    assert tool.json()["result"]["output_text"] == "review-ok"
+
+
+def test_turn_context_is_ranked_and_compacted(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    captured: dict[str, object] = {}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        captured["context"] = context
+        return ModelReply(text="ok", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    for idx in range(35):
+        client.put(
+            f"/sessions/{session_id}/context",
+            json={"key": f"k{idx}", "value": "x" * 2000, "scope": "pinned"},
+        )
+    run = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "use k1 and summary"})
+    assert run.status_code == 200
+    context = captured["context"]
+    assert len(context["selected_context"]) <= 20
+    diagnostics = context["context_diagnostics"]
+    assert diagnostics["source"] == "auto_ranked"
+    assert diagnostics["dropped_items"] >= 1
+
+
+def test_model_table_endpoints(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    models = client.get("/models/table")
+    assert models.status_code == 200
+    assert isinstance(models.json(), list)
+    assert len(models.json()) >= 1
+
+    upsert = client.put(
+        "/models/table/custom-model",
+        json={
+            "strategy": "custom",
+            "best_for": "experiments",
+            "speed_tier": 3,
+            "quality_tier": 3,
+            "cost_tier": 2,
+            "max_context_hint": 32000,
+        },
+    )
+    assert upsert.status_code == 200
+    assert upsert.json()["model"] == "custom-model"
+
+    catalog = client.get("/tools/catalog")
+    assert catalog.status_code == 200
+    names = {item["name"] for item in catalog.json()}
+    assert "Review" in names
+    assert "ReadTaskOutput" in names
