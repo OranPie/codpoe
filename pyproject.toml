@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "poecoder"
-version = "0.1.0"
+version = "0.1.1"
 description = "Codex-like coding CLI with FastAPI backend and Poe model integration"
 requires-python = ">=3.11"
 dependencies = [

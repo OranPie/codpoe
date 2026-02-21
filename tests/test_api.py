@@ -208,11 +208,13 @@ def test_openai_login_and_base_url_update(monkeypatch, tmp_path):
     assert api.STATE.turns.model_client.openai_api_key == "oa-demo-key"
     assert api.STATE.subagents.model_client.openai_api_key == "oa-demo-key"
     assert api.STATE.reviews.model_client.openai_api_key == "oa-demo-key"
+    assert api.STATE.model_catalog.openai_api_key == "oa-demo-key"
 
     base_url = client.post("/providers/openai/base-url", json={"base_url": "https://proxy.openai.local/v1/"})
     assert base_url.status_code == 200
     assert base_url.json()["base_url"] == "https://proxy.openai.local/v1"
     assert api.STATE.settings.openai_api_url == "https://proxy.openai.local/v1/"
+    assert api.STATE.model_catalog.openai_api_url == "https://proxy.openai.local/v1"
 
 
 def test_tool_set_base_uri(monkeypatch, tmp_path):
@@ -257,10 +259,32 @@ def test_usage_balance_and_tool(monkeypatch, tmp_path):
     bal = client.get("/usage/current_balance")
     assert bal.status_code == 200
     assert bal.json()["current_point_balance"] == 12345
+    assert "openai" in bal.json()
 
     tool = client.post("/tools/invoke", json={"name": "GetBalance", "args": {}})
     assert tool.status_code == 200
     assert tool.json()["result"]["current_point_balance"] == 12345
+
+
+def test_usage_balance_reports_openai_when_poe_missing(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    monkeypatch.delenv("POECODER_POE_API_KEY", raising=False)
+    monkeypatch.setenv("POECODER_OPENAI_API_KEY", "oa-key")
+    monkeypatch.setenv("POECODER_OPENAI_API_URL", "https://openai.proxy/v1")
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    bal = client.get("/usage/current_balance")
+    assert bal.status_code == 200
+    data = bal.json()
+    assert "current_point_balance" not in data
+    assert data["poe"]["error"] == "POE API key not configured"
+    assert data["openai"]["api_key_configured"] is True
+    assert data["openai"]["base_url"] == "https://openai.proxy/v1"
 
 
 def test_turn_model_tool_communication(monkeypatch, tmp_path):

@@ -64,7 +64,12 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         openai_models=settings.openai_models,
     )
     router = ModelRouter(settings.default_small_model, settings.default_large_model)
-    model_catalog = ModelCatalog(settings.supported_models, api_key=settings.poe_api_key)
+    model_catalog = ModelCatalog(
+        settings.supported_models,
+        api_key=settings.poe_api_key,
+        openai_api_key=settings.openai_api_key,
+        openai_api_url=settings.openai_api_url,
+    )
     model_profiles = ModelProfileService(db=db)
     model_profiles.ensure_seeded(model_catalog.list_models(refresh=False))
 

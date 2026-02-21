@@ -364,6 +364,12 @@ class PoeCoderCLI:
         except (EOFError, KeyboardInterrupt):
             return ""
 
+    def _prompt_openai_api_key(self) -> str:
+        try:
+            return getpass(self._t("cli.api_key_prompt_openai")).strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
     @staticmethod
     def _configure_line_editing() -> None:
         try:
@@ -568,7 +574,7 @@ class PoeCoderCLI:
                 self._render_backend_error(exc)
             return False
         if cmd == "/loginopenai":
-            api_key = parts[1].strip() if len(parts) >= 2 else self._prompt_api_key()
+            api_key = parts[1].strip() if len(parts) >= 2 else self._prompt_openai_api_key()
             if not api_key:
                 print(self.style.warn(self._t("msg.login_cancelled")))
                 return False
@@ -871,7 +877,24 @@ class PoeCoderCLI:
             resp.raise_for_status()
             data = resp.json()
             points = data.get("current_point_balance")
-            print(self.style.info(self._t("msg.current_balance", points=points)))
+            if isinstance(points, int):
+                print(self.style.info(self._t("msg.current_balance", points=points)))
+            else:
+                poe = data.get("poe", {})
+                error = poe.get("error") if isinstance(poe, dict) else None
+                print(self.style.warn(self._t("msg.poe_balance_unavailable", error=str(error or "unknown"))))
+            openai = data.get("openai", {})
+            if isinstance(openai, dict):
+                print(
+                    self.style.dim(
+                        self._t(
+                            "msg.openai_balance_status",
+                            enabled=str(bool(openai.get("api_key_configured"))).lower(),
+                            base_url=str(openai.get("base_url", "")),
+                            count=str(openai.get("model_count", 0)),
+                        )
+                    )
+                )
             return False
         if cmd == "/context" and len(parts) >= 3:
             key = parts[1]

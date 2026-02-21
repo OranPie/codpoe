@@ -11,6 +11,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "cli.type_help": "(type /help)",
         "cli.prompt": "poecoder> ",
         "cli.api_key_prompt": "Poe API key: ",
+        "cli.api_key_prompt_openai": "OpenAI API key: ",
         "cli.help": """
 Commands:
   /help                               Show this help
@@ -98,6 +99,8 @@ Commands:
         "msg.current_thinking": "thinking={level} budget={budget}",
         "msg.balance_backend_only": "Balance requires backend mode.",
         "msg.current_balance": "Current balance: {points} points",
+        "msg.poe_balance_unavailable": "Poe balance unavailable: {error}",
+        "msg.openai_balance_status": "OpenAI: key_set={enabled} base_url={base_url} models={count}",
         "msg.context_json_invalid": "Context value must be valid JSON",
         "msg.local_context_updated": "Local context updated.",
         "msg.context_stored": "Context stored.",
@@ -171,6 +174,7 @@ Commands:
         "cli.type_help": "（输入 /help 查看帮助）",
         "cli.prompt": "poecoder> ",
         "cli.api_key_prompt": "Poe API Key：",
+        "cli.api_key_prompt_openai": "OpenAI API Key：",
         "cli.help": """
 命令：
   /help                               显示帮助
@@ -258,6 +262,8 @@ Commands:
         "msg.current_thinking": "思考设置 level={level} budget={budget}",
         "msg.balance_backend_only": "余额查询仅支持后端模式。",
         "msg.current_balance": "当前余额：{points} 点",
+        "msg.poe_balance_unavailable": "Poe 余额不可用：{error}",
+        "msg.openai_balance_status": "OpenAI：已配置Key={enabled} base_url={base_url} 模型数={count}",
         "msg.context_json_invalid": "上下文值必须是合法 JSON",
         "msg.local_context_updated": "本地上下文已更新。",
         "msg.context_stored": "上下文已保存。",

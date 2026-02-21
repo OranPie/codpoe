@@ -64,7 +64,7 @@ def get_state() -> AppState:
     return STATE
 
 
-app = FastAPI(title="PoeCoder API", version="0.1.0")
+app = FastAPI(title="PoeCoder API", version="0.1.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -109,6 +109,7 @@ def auth_openai_login(req: ApiLoginRequest) -> dict[str, Any]:
     state.turns.model_client.update_openai(api_key=api_key)
     state.subagents.model_client.update_openai(api_key=api_key)
     state.reviews.model_client.update_openai(api_key=api_key)
+    state.model_catalog.update_openai(api_key=api_key)
     return {"ok": True, "message": "openai api key updated"}
 
 
@@ -152,6 +153,7 @@ def auth_secrets_load(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
     state.reviews.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
     state.reviews.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
     state.model_catalog.api_key = poe_api_key
+    state.model_catalog.update_openai(api_key=openai_api_key, base_url=openai_api_url)
     state.usage.api_key = poe_api_key
 
     return {
@@ -186,6 +188,7 @@ def provider_openai_base_url(req: ProviderBaseUrlRequest) -> dict[str, Any]:
     state.turns.model_client.update_openai(base_url=base_url)
     state.subagents.model_client.update_openai(base_url=base_url)
     state.reviews.model_client.update_openai(base_url=base_url)
+    state.model_catalog.update_openai(base_url=base_url)
     return {"ok": True, "base_url": state.turns.model_client.openai_api_url}
 
 
@@ -518,10 +521,22 @@ def wiki_compact(req: WikiCompactRequest) -> dict[str, Any]:
 @app.get("/usage/current_balance")
 def usage_current_balance() -> dict[str, Any]:
     state = get_state()
+    payload: dict[str, Any] = {}
     try:
-        return state.usage.get_current_balance()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        poe_balance = state.usage.get_current_balance()
+        payload.update(poe_balance)
+        payload["poe"] = poe_balance
+    except Exception as exc:  # noqa: BLE001
+        payload["poe"] = {"error": str(exc)}
+    models = state.model_catalog.list_models(refresh=False)
+    openai_models = [name for name in models if isinstance(name, str) and name.startswith("openai/")]
+    payload["openai"] = {
+        "api_key_configured": bool(state.settings.openai_api_key),
+        "base_url": state.settings.openai_api_url,
+        "model_count": len(openai_models),
+        "models_preview": openai_models[:10],
+    }
+    return payload
 
 @app.post("/commands/install")
 def command_install(req: CommandInstallRequest) -> dict[str, Any]:

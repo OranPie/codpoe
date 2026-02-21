@@ -71,6 +71,23 @@ def test_cli_prompts_for_api_key_when_missing(monkeypatch) -> None:
     assert cli.direct_model_client.api_key == "poe-demo-key"
 
 
+def test_cli_loginopenai_uses_openai_prompt(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=True,
+        model="assistant",
+        lang="en",
+    )
+
+    monkeypatch.setattr(cli, "_prompt_openai_api_key", lambda: "oa-demo-key")
+    monkeypatch.setattr(cli, "_prompt_api_key", lambda: (_ for _ in ()).throw(AssertionError("wrong prompt")))
+
+    handled = cli._handle_command("/loginopenai")
+    assert handled is False
+    assert cli.settings.openai_api_key == "oa-demo-key"
+    assert cli.direct_model_client.openai_api_key == "oa-demo-key"
+
+
 def test_cli_runtime_event_loop_closed_is_handled(monkeypatch) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",
@@ -172,6 +189,36 @@ def test_cli_prints_per_message_cost(monkeypatch, capsys) -> None:
     cli.start()
     out = capsys.readouterr().out
     assert "message cost=4 points (balance 1000->996)" in out
+
+
+def test_cli_balance_prints_openai_details(monkeypatch, capsys) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "current_point_balance": 12,
+                "openai": {
+                    "api_key_configured": True,
+                    "base_url": "https://api.openai.com/v1",
+                    "model_count": 42,
+                },
+            }
+
+    monkeypatch.setattr(cli.http, "get", lambda *_args, **_kwargs: Resp())
+    handled = cli._handle_command("/balance")
+    assert handled is False
+    out = capsys.readouterr().out
+    assert "Current balance: 12 points" in out
+    assert "OpenAI: key_set=true" in out
 
 
 def test_cli_resume_by_index_updates_session_state(monkeypatch) -> None:
