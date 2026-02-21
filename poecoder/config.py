@@ -5,8 +5,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+DEFAULT_PRESET_MODELS = [
+    "assistant",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5",
+    "claude-sonnet-4.5",
+    "claude-opus-4.1",
+    "gemini-2.5-pro",
+]
+
+DEFAULT_PRESET_OPENAI_MODELS = [
+    "openai/gpt-5",
+    "openai/gpt-5-mini",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+    "openai/o4-mini",
+]
+
+
 @dataclass(slots=True)
 class Settings:
+    home_dir: Path
     db_path: Path
     poe_api_url: str
     poe_api_key: str | None
@@ -79,9 +99,13 @@ def get_settings() -> Settings:
     reviewer_thinking_level = os.environ.get("POECODER_REVIEWER_THINKING_LEVEL", "deep")
     reviewer_thinking_budget = int(os.environ.get("POECODER_REVIEWER_THINKING_BUDGET", "16000"))
     openai_models = _normalize_openai_models(os.environ.get("POECODER_OPENAI_MODELS", ""))
+    merged_openai_models: list[str] = []
+    for name in [*DEFAULT_PRESET_OPENAI_MODELS, *openai_models]:
+        if name not in merged_openai_models:
+            merged_openai_models.append(name)
     supported = _parse_models(
         os.environ.get("POECODER_MODELS", ""),
-        [default_small, default_large, *openai_models],
+        [default_small, default_large, *DEFAULT_PRESET_MODELS, *merged_openai_models],
     )
     return Settings(
         db_path=db_path,
@@ -89,7 +113,7 @@ def get_settings() -> Settings:
         poe_api_key=os.environ.get("POECODER_POE_API_KEY"),
         openai_api_url=os.environ.get("POECODER_OPENAI_API_URL", "https://api.openai.com/v1"),
         openai_api_key=os.environ.get("POECODER_OPENAI_API_KEY"),
-        openai_models=openai_models,
+        openai_models=merged_openai_models,
         default_small_model=default_small,
         default_large_model=default_large,
         default_thinking_level=default_thinking_level,
@@ -102,4 +126,5 @@ def get_settings() -> Settings:
         port=int(os.environ.get("POECODER_PORT", "8765")),
         supported_models=supported,
         lang=os.environ.get("POECODER_LANG", "en"),
+        home_dir=home,
     )

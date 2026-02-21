@@ -248,3 +248,51 @@ def test_cli_thinkdetails_updates_backend_state(monkeypatch) -> None:
     assert handled is False
     assert cli.state.show_think_details is True
     assert str(captured["url"]).endswith("/sessions/s1/think-details")
+
+
+def test_cli_setbaseuri_updates_direct_client(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=True,
+        model="assistant",
+        lang="en",
+    )
+
+    handled = cli._handle_command("/setbaseuri poe https://proxy.poe.local/api")
+    assert handled is False
+    assert cli.settings.poe_api_url == "https://proxy.poe.local/api"
+    assert cli.direct_model_client.api_url == "https://proxy.poe.local/api/"
+
+    handled2 = cli._handle_command("/setbaseuri openai https://openai.proxy/v1/")
+    assert handled2 is False
+    assert cli.settings.openai_api_url == "https://openai.proxy/v1/"
+    assert cli.direct_model_client.openai_api_url == "https://openai.proxy/v1"
+
+
+def test_cli_setbaseuri_updates_backend(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    cli.state.session_id = "s1"
+    captured: dict[str, object] = {}
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"ok": True, "base_url": "https://api.poe.com/bot/"}
+
+    def fake_post(url: str, json: dict):
+        captured["url"] = url
+        captured["json"] = json
+        return Resp()
+
+    monkeypatch.setattr(cli.http, "post", fake_post)
+    handled = cli._handle_command("/setbaseuri poe https://api.poe.com")
+    assert handled is False
+    assert str(captured["url"]).endswith("/providers/poe/base-url")
+    assert captured["json"] == {"base_url": "https://api.poe.com"}

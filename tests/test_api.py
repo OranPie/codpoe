@@ -215,6 +215,29 @@ def test_openai_login_and_base_url_update(monkeypatch, tmp_path):
     assert api.STATE.settings.openai_api_url == "https://proxy.openai.local/v1/"
 
 
+def test_tool_set_base_uri(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+
+    poe = client.post("/tools/invoke", json={"name": "SetBaseUri", "args": {"provider": "poe", "base_uri": "https://api.poe.com"}})
+    assert poe.status_code == 200
+    assert poe.json()["result"]["base_uri"] == "https://api.poe.com/bot/"
+    assert api.STATE.settings.poe_api_url == "https://api.poe.com"
+
+    openai = client.post(
+        "/tools/invoke",
+        json={"name": "SetBaseUri", "args": {"provider": "openai", "base_uri": "https://proxy.openai.local/v1/"}},
+    )
+    assert openai.status_code == 200
+    assert openai.json()["result"]["base_uri"] == "https://proxy.openai.local/v1"
+    assert api.STATE.settings.openai_api_url == "https://proxy.openai.local/v1/"
+
+
 def test_usage_balance_and_tool(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))

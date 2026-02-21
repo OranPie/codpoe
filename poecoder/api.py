@@ -23,6 +23,8 @@ from poecoder.models import (
     MemoryEditRequest,
     MemoryReadRequest,
     MemoryWriteRequest,
+    ProviderSecretsLoadRequest,
+    ProviderSecretsSaveRequest,
     ProviderBaseUrlRequest,
     GetWebRawRequest,
     GetWebRequest,
@@ -108,6 +110,57 @@ def auth_openai_login(req: ApiLoginRequest) -> dict[str, Any]:
     state.subagents.model_client.update_openai(api_key=api_key)
     state.reviews.model_client.update_openai(api_key=api_key)
     return {"ok": True, "message": "openai api key updated"}
+
+
+@app.post("/auth/secrets/save")
+def auth_secrets_save(req: ProviderSecretsSaveRequest) -> dict[str, Any]:
+    state = get_state()
+    payload = {
+        "poe_api_key": (req.poe_api_key if req.poe_api_key is not None else state.settings.poe_api_key) or "",
+        "openai_api_key": (
+            req.openai_api_key if req.openai_api_key is not None else state.settings.openai_api_key
+        )
+        or "",
+        "poe_api_url": req.poe_api_url or state.settings.poe_api_url,
+        "openai_api_url": req.openai_api_url or state.settings.openai_api_url,
+    }
+    state.provider_secrets.save(req.user_key, payload)
+    return {"ok": True, "path": str(state.provider_secrets.path)}
+
+
+@app.post("/auth/secrets/load")
+def auth_secrets_load(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
+    state = get_state()
+    payload = state.provider_secrets.load(req.user_key)
+
+    poe_api_key = str(payload.get("poe_api_key", "")).strip() or None
+    openai_api_key = str(payload.get("openai_api_key", "")).strip() or None
+    poe_api_url = str(payload.get("poe_api_url", state.settings.poe_api_url)).strip() or state.settings.poe_api_url
+    openai_api_url = (
+        str(payload.get("openai_api_url", state.settings.openai_api_url)).strip() or state.settings.openai_api_url
+    )
+
+    state.settings.poe_api_key = poe_api_key
+    state.settings.openai_api_key = openai_api_key
+    state.settings.poe_api_url = poe_api_url
+    state.settings.openai_api_url = openai_api_url
+
+    state.turns.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
+    state.turns.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
+    state.subagents.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
+    state.subagents.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
+    state.reviews.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
+    state.reviews.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
+    state.model_catalog.api_key = poe_api_key
+    state.usage.api_key = poe_api_key
+
+    return {
+        "ok": True,
+        "poe_api_key_set": bool(poe_api_key),
+        "openai_api_key_set": bool(openai_api_key),
+        "poe_api_url": state.turns.model_client.api_url,
+        "openai_api_url": state.turns.model_client.openai_api_url,
+    }
 
 
 @app.post("/providers/poe/base-url")

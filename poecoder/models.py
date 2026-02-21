@@ -59,6 +59,18 @@ class ProviderBaseUrlRequest(BaseModel):
     base_url: str
 
 
+class ProviderSecretsSaveRequest(BaseModel):
+    user_key: str
+    poe_api_key: str | None = None
+    openai_api_key: str | None = None
+    poe_api_url: str | None = None
+    openai_api_url: str | None = None
+
+
+class ProviderSecretsLoadRequest(BaseModel):
+    user_key: str
+
+
 class SessionThinkingRequest(BaseModel):
     thinking_level: Literal["quick", "balanced", "deep"]
     thinking_budget: int = Field(ge=100, le=500000)

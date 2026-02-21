@@ -146,9 +146,17 @@ class PoeCoderCLI:
         rows: list[list[str]] = []
         for idx, name in enumerate(models, start=1):
             marker = "*" if name == current else " "
-            rows.append([str(idx), marker, name])
+            provider = "openai" if name.startswith("openai/") or name.startswith("oa:") else "poe"
+            thinking = PoeModelClient.thinking_support_summary(name)
+            rows.append([str(idx), marker, provider, thinking, name])
         self._print_table(
-            [self._t("table.no"), self._t("table.current"), self._t("table.model")],
+            [
+                self._t("table.no"),
+                self._t("table.current"),
+                self._t("table.provider"),
+                self._t("table.thinking"),
+                self._t("table.model"),
+            ],
             rows,
         )
         print(self.style.dim(self._t("msg.current_model", model=current)))
@@ -579,6 +587,38 @@ class PoeCoderCLI:
             except httpx.HTTPError as exc:
                 print(self.style.warn(self._t("msg.login_backend_failed_direct_only")))
                 self._render_backend_error(exc)
+            return False
+        if cmd in {"/setbaseuri", "/setbaseurl", "/baseuri"}:
+            if len(parts) < 3:
+                print(self.style.warn(self._t("msg.base_uri_usage")))
+                return False
+            provider = parts[1].strip().lower()
+            base_url = " ".join(parts[2:]).strip()
+            if provider not in {"poe", "openai", "oa"} or not base_url:
+                print(self.style.warn(self._t("msg.base_uri_usage")))
+                return False
+            provider_name = "openai" if provider == "oa" else provider
+            if provider_name == "poe":
+                self.settings.poe_api_url = base_url
+                self.direct_model_client.update_poe(base_url=base_url)
+            else:
+                self.settings.openai_api_url = base_url
+                self.direct_model_client.update_openai(base_url=base_url)
+            if not self.direct:
+                endpoint = f"{self.state.backend_url}/providers/{provider_name}/base-url"
+                resp = self.http.post(endpoint, json={"base_url": base_url})
+                resp.raise_for_status()
+                payload = resp.json()
+                if not isinstance(payload, dict):
+                    payload = {}
+                applied = str(payload.get("base_url", base_url))
+            else:
+                applied = (
+                    self.direct_model_client.api_url
+                    if provider_name == "poe"
+                    else self.direct_model_client.openai_api_url
+                )
+            print(self.style.ok(self._t("msg.base_uri_updated", provider=provider_name, url=applied)))
             return False
         if cmd == "/sessions":
             if self.direct:

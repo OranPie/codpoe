@@ -46,6 +46,8 @@ class ToolRuntime:
     model_catalog: ModelCatalog
     web_tools: WebTools
     usage_service: UsageService
+    settings: Any
+    model_client: Any
     review_service: ReviewService | None = None
     task_service: "TaskService | None" = None
     leader_service: "LeaderService | None" = None
@@ -94,6 +96,7 @@ class ToolRuntime:
             {"name": "WikiQuery", "args": "project_id,query,limit?", "effect": "Query project wiki"},
             {"name": "WikiCompact", "args": "project_id", "effect": "Compact wiki docs"},
             {"name": "GetBalance", "args": "", "effect": "Read Poe balance"},
+            {"name": "SetBaseUri", "args": "provider,base_uri", "effect": "Set provider base URI (poe|openai)"},
         ]
 
     async def invoke(self, actor: str, name: str, args: dict[str, Any]) -> Any:
@@ -165,6 +168,20 @@ class ToolRuntime:
 
         if name == "GetBalance":
             return self.usage_service.get_current_balance()
+        if name == "SetBaseUri":
+            provider = str(args.get("provider", "")).strip().lower()
+            base_uri = str(args.get("base_uri") or args.get("base_url") or "").strip()
+            if not base_uri:
+                raise ValueError("SetBaseUri requires base_uri")
+            if provider == "poe":
+                self.settings.poe_api_url = base_uri
+                self.model_client.update_poe(base_url=base_uri)
+                return {"provider": "poe", "base_uri": self.model_client.api_url}
+            if provider in {"openai", "oa"}:
+                self.settings.openai_api_url = base_uri
+                self.model_client.update_openai(base_url=base_uri)
+                return {"provider": "openai", "base_uri": self.model_client.openai_api_url}
+            raise ValueError("SetBaseUri requires provider=poe|openai")
 
         if name == "ListModels":
             refresh = bool(args.get("refresh", False))

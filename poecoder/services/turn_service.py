@@ -43,7 +43,7 @@ class TurnService:
         tool_events: list[dict[str, Any]] = []
         output_text = first.text
         repair_attempt = 0
-        while not tool_calls and self._needs_repair_output(output_text) and repair_attempt < 2:
+        while not tool_calls and self._needs_repair_output(output_text) and repair_attempt < 1:
             repair_attempt += 1
             repaired = await self.model_client.chat(
                 model=model,
@@ -116,7 +116,7 @@ class TurnService:
         first_text = "".join(first_chunks)
         tool_calls = parse_tool_calls(first_text)
         repair_attempt = 0
-        while not tool_calls and self._needs_repair_output(first_text) and repair_attempt < 2:
+        while not tool_calls and self._needs_repair_output(first_text) and repair_attempt < 1:
             repair_attempt += 1
             repaired_text = ""
             yield {"type": "status", "data": "responding"}
@@ -339,6 +339,15 @@ class TurnService:
             return True
         lowered = stripped.lower()
         if "@tool " in lowered:
+            return False
+        remainder = re.sub(
+            r"(thinking\.{3}(?: \(\d+s elapsed\))?|generating\.{3}(?: \(\d+s elapsed\))?)",
+            " ",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if len(remainder.strip()) >= 10:
+            # Keep normal answers even when providers prepend progress markers.
             return False
         filler_matches = re.findall(
             r"(thinking\.{3}(?: \(\d+s elapsed\))?|generating\.{3}(?: \(\d+s elapsed\))?)",

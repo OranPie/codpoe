@@ -17,6 +17,7 @@ Commands:
   /quit                               Exit CLI
   /login [api_key]                    Set/update Poe API key (prompt if omitted)
   /loginopenai [api_key]              Set/update OpenAI API key (prompt if omitted)
+  /setbaseuri <poe|openai> <url>      Set provider base URI
   /sessions [limit]                   List resumable backend sessions
   /resume <session_id|index>          Resume an existing backend session
   /system <text>                      Set system message
@@ -57,6 +58,8 @@ Commands:
         "msg.login_direct_updated": "Direct Poe API key updated.",
         "msg.login_backend_updated": "Backend Poe API key updated.",
         "msg.login_openai_backend_updated": "Backend OpenAI API key updated.",
+        "msg.base_uri_usage": "Usage: /setbaseuri <poe|openai> <url>",
+        "msg.base_uri_updated": "Base URI updated: provider={provider} url={url}",
         "msg.login_backend_failed_direct_only": "Backend unavailable; saved key for direct mode only.",
         "msg.backend_unreachable": "Backend unreachable at {url}: {error}",
         "msg.backend_reason_prefix": "Possible reason: {reason}",
@@ -127,6 +130,8 @@ Commands:
         "msg.session_id": "session={session_id}",
         "table.no": "no",
         "table.current": "current",
+        "table.provider": "provider",
+        "table.thinking": "thinking",
         "table.model": "model",
         "table.mode": "mode",
         "table.title": "title",
@@ -172,6 +177,7 @@ Commands:
   /quit                               退出 CLI
   /login [api_key]                    设置/更新 Poe API Key（省略则提示输入）
   /loginopenai [api_key]              设置/更新 OpenAI API Key（省略则提示输入）
+  /setbaseuri <poe|openai> <url>      设置提供方基础 URI
   /sessions [limit]                   列出可恢复的后端会话
   /resume <session_id|index>          恢复已有后端会话
   /system <text>                      设置系统提示词
@@ -212,6 +218,8 @@ Commands:
         "msg.login_direct_updated": "直连 Poe API Key 已更新。",
         "msg.login_backend_updated": "后端 Poe API Key 已更新。",
         "msg.login_openai_backend_updated": "后端 OpenAI API Key 已更新。",
+        "msg.base_uri_usage": "用法：/setbaseuri <poe|openai> <url>",
+        "msg.base_uri_updated": "基础 URI 已更新：provider={provider} url={url}",
         "msg.login_backend_failed_direct_only": "后端不可用；仅已保存到直连模式。",
         "msg.backend_unreachable": "无法连接后端 {url}: {error}",
         "msg.backend_reason_prefix": "可能原因：{reason}",
@@ -282,6 +290,8 @@ Commands:
         "msg.session_id": "会话={session_id}",
         "table.no": "序号",
         "table.current": "当前",
+        "table.provider": "提供方",
+        "table.thinking": "思考能力",
         "table.model": "模型",
         "table.mode": "模式",
         "table.title": "标题",

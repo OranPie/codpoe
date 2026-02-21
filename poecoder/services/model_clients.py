@@ -46,6 +46,16 @@ class ModelProviderError(Exception):
 
 
 class PoeModelClient:
+    _OPENAI_REASONING_SPECS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+        # Source: OpenAI model/reference docs (gpt-5/o-series reasoning_effort support).
+        ("gpt-5-pro", ("high",), "high"),
+        ("gpt-5.2-codex-max", ("none", "low", "medium", "high", "xhigh"), "none"),
+        ("gpt-5.2", ("none", "low", "medium", "high", "xhigh"), "none"),
+        ("gpt-5.1", ("none", "low", "medium", "high"), "none"),
+        ("gpt-5", ("minimal", "low", "medium", "high"), "medium"),
+        ("o", ("low", "medium", "high"), "medium"),
+    )
+
     def __init__(
         self,
         api_url: str,
@@ -59,6 +69,7 @@ class PoeModelClient:
         self.openai_api_url = self._normalize_openai_api_url(openai_api_url)
         self.openai_api_key = openai_api_key
         self.openai_models = {self._strip_openai_prefix(name) for name in (openai_models or []) if name}
+        self._openai_clients: dict[tuple[str, str], Any] = {}
 
     def update_poe(self, api_key: str | None = None, base_url: str | None = None) -> None:
         if api_key is not None:
@@ -71,6 +82,7 @@ class PoeModelClient:
             self.openai_api_key = api_key
         if base_url is not None:
             self.openai_api_url = self._normalize_openai_api_url(base_url)
+        self._openai_clients.clear()
 
     async def chat(
         self,
@@ -270,31 +282,22 @@ class PoeModelClient:
                 retryable=False,
             )
         messages = self._build_openai_messages(system_message, user_prompt, context, images)
-        try:
-            from openai import AsyncOpenAI  # noqa: PLC0415
-        except Exception as exc:  # noqa: BLE001
-            raise ModelProviderError(
-                model=model,
-                code="openai_sdk_missing",
-                detail="OpenAI Python SDK is not installed.",
-                hint="Install with `python -m pip install openai`.",
-                http_status=500,
-                retryable=False,
-            ) from exc
-
-        client = AsyncOpenAI(api_key=self.openai_api_key, base_url=self.openai_api_url, timeout=90.0)
+        client = self._get_openai_client()
+        request_kwargs = self._openai_request_kwargs(model, context)
         try:
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 stream=False,
+                **request_kwargs,
             )
-            text = self._extract_openai_text(response)
+            text = self._extract_openai_text(
+                response,
+                include_thinking=self._should_include_thinking(context),
+            )
             return ModelReply(text=text, raw={"provider": "openai"})
         except Exception as exc:  # noqa: BLE001
             raise self._translate_openai_error(model, exc) from exc
-        finally:
-            await client.close()
 
     async def _chat_stream_openai(
         self,
@@ -314,23 +317,17 @@ class PoeModelClient:
                 retryable=False,
             )
         messages = self._build_openai_messages(system_message, user_prompt, context, images)
-        try:
-            from openai import AsyncOpenAI  # noqa: PLC0415
-        except Exception as exc:  # noqa: BLE001
-            raise ModelProviderError(
-                model=model,
-                code="openai_sdk_missing",
-                detail="OpenAI Python SDK is not installed.",
-                hint="Install with `python -m pip install openai`.",
-                http_status=500,
-                retryable=False,
-            ) from exc
-        client = AsyncOpenAI(api_key=self.openai_api_key, base_url=self.openai_api_url, timeout=90.0)
+        client = self._get_openai_client()
+        request_kwargs = self._openai_request_kwargs(model, context)
+        include_thinking = self._should_include_thinking(context)
+        emitted_thinking_header = False
+        emitted_answer = False
         try:
             stream = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 stream=True,
+                **request_kwargs,
             )
             async for chunk in stream:
                 choices = getattr(chunk, "choices", None) or []
@@ -339,23 +336,45 @@ class PoeModelClient:
                 delta = getattr(choices[0], "delta", None)
                 if delta is None:
                     continue
-                content = getattr(delta, "content", None)
-                if isinstance(content, str) and content:
-                    yield content
-                    continue
-                if isinstance(content, list):
-                    for part in content:
-                        text = ""
-                        if isinstance(part, dict):
-                            text = str(part.get("text", ""))
-                        else:
-                            text = str(getattr(part, "text", ""))
-                        if text:
-                            yield text
+                thinking_chunk = self._extract_openai_thinking_from_delta(delta) if include_thinking else ""
+                if thinking_chunk:
+                    if not emitted_thinking_header:
+                        emitted_thinking_header = True
+                        yield "[thinking]\n"
+                    yield thinking_chunk
+                answer_chunk = self._extract_openai_text_from_delta(delta)
+                if answer_chunk:
+                    if emitted_thinking_header and not emitted_answer:
+                        yield "\n\n"
+                    emitted_answer = True
+                    yield answer_chunk
         except Exception as exc:  # noqa: BLE001
             raise self._translate_openai_error(model, exc) from exc
-        finally:
-            await client.close()
+
+    def _get_openai_client(self) -> Any:
+        try:
+            from openai import AsyncOpenAI  # noqa: PLC0415
+        except Exception as exc:  # noqa: BLE001
+            raise ModelProviderError(
+                model="openai",
+                code="openai_sdk_missing",
+                detail="OpenAI Python SDK is not installed.",
+                hint="Install with `python -m pip install openai`.",
+                http_status=500,
+                retryable=False,
+            ) from exc
+        key = (self.openai_api_key or "", self.openai_api_url)
+        cached = self._openai_clients.get(key)
+        if cached is not None:
+            return cached
+        client = AsyncOpenAI(
+            api_key=self.openai_api_key,
+            base_url=self.openai_api_url,
+            timeout=90.0,
+            max_retries=2,
+        )
+        self._openai_clients[key] = client
+        return client
 
     def _build_openai_messages(
         self,
@@ -379,7 +398,7 @@ class PoeModelClient:
         return messages
 
     @staticmethod
-    def _extract_openai_text(response: Any) -> str:
+    def _extract_openai_text(response: Any, include_thinking: bool = False) -> str:
         choices = getattr(response, "choices", None) or []
         if not choices:
             return ""
@@ -388,18 +407,178 @@ class PoeModelClient:
             return ""
         content = getattr(message, "content", "")
         if isinstance(content, str):
-            return content
-        if isinstance(content, list):
+            text_out = content
+        elif isinstance(content, list):
             parts: list[str] = []
             for part in content:
-                if isinstance(part, dict):
-                    text = str(part.get("text", ""))
-                else:
-                    text = str(getattr(part, "text", ""))
+                text = PoeModelClient._extract_text_part(part)
                 if text:
                     parts.append(text)
-            return "".join(parts)
-        return str(content)
+            text_out = "".join(parts)
+        else:
+            text_out = str(content)
+
+        if not include_thinking:
+            return text_out
+        thinking = PoeModelClient._extract_openai_thinking_from_message(message)
+        if not thinking:
+            return text_out
+        if text_out:
+            return f"[thinking]\n{thinking}\n\n{text_out}"
+        return f"[thinking]\n{thinking}"
+
+    @staticmethod
+    def _extract_text_part(part: Any) -> str:
+        if isinstance(part, dict):
+            part_type = str(part.get("type", "")).lower()
+            if part_type not in {"", "text", "output_text"}:
+                return ""
+            return str(part.get("text", ""))
+        part_type = str(getattr(part, "type", "")).lower()
+        if part_type not in {"", "text", "output_text"}:
+            return ""
+        return str(getattr(part, "text", ""))
+
+    @staticmethod
+    def _extract_openai_text_from_delta(delta: Any) -> str:
+        content = getattr(delta, "content", None)
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ""
+        parts: list[str] = []
+        for part in content:
+            text = PoeModelClient._extract_text_part(part)
+            if text:
+                parts.append(text)
+        return "".join(parts)
+
+    @staticmethod
+    def _extract_openai_thinking_from_message(message: Any) -> str:
+        chunks: list[str] = []
+        chunks.extend(PoeModelClient._flatten_text(getattr(message, "reasoning_content", None)))
+        chunks.extend(PoeModelClient._flatten_text(getattr(message, "reasoning", None)))
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            for part in content:
+                part_type = ""
+                if isinstance(part, dict):
+                    part_type = str(part.get("type", "")).lower()
+                else:
+                    part_type = str(getattr(part, "type", "")).lower()
+                if part_type in {"reasoning", "thinking"}:
+                    chunks.extend(PoeModelClient._flatten_text(part))
+        return PoeModelClient._join_unique_lines(chunks)
+
+    @staticmethod
+    def _extract_openai_thinking_from_delta(delta: Any) -> str:
+        chunks: list[str] = []
+        chunks.extend(PoeModelClient._flatten_text(getattr(delta, "reasoning_content", None)))
+        chunks.extend(PoeModelClient._flatten_text(getattr(delta, "reasoning", None)))
+        content = getattr(delta, "content", None)
+        if isinstance(content, list):
+            for part in content:
+                part_type = ""
+                if isinstance(part, dict):
+                    part_type = str(part.get("type", "")).lower()
+                else:
+                    part_type = str(getattr(part, "type", "")).lower()
+                if part_type in {"reasoning", "thinking"}:
+                    chunks.extend(PoeModelClient._flatten_text(part))
+        return PoeModelClient._join_unique_lines(chunks)
+
+    @staticmethod
+    def _flatten_text(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            return [text] if text else []
+        if isinstance(value, dict):
+            out: list[str] = []
+            for key in ("text", "content", "summary", "reasoning", "output_text"):
+                if key in value:
+                    out.extend(PoeModelClient._flatten_text(value.get(key)))
+            return out
+        if isinstance(value, list):
+            out: list[str] = []
+            for item in value:
+                out.extend(PoeModelClient._flatten_text(item))
+            return out
+        attrs = ("text", "content", "summary", "reasoning", "output_text")
+        out: list[str] = []
+        for attr in attrs:
+            if hasattr(value, attr):
+                out.extend(PoeModelClient._flatten_text(getattr(value, attr)))
+        return out
+
+    @staticmethod
+    def _join_unique_lines(items: list[str]) -> str:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            clean = item.strip()
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            out.append(clean)
+        return "\n".join(out)
+
+    @staticmethod
+    def _should_include_thinking(context: dict[str, Any]) -> bool:
+        model_settings = context.get("model_settings", {})
+        if not isinstance(model_settings, dict):
+            return False
+        return bool(model_settings.get("show_think_details"))
+
+    @staticmethod
+    def _openai_request_kwargs(model: str, context: dict[str, Any]) -> dict[str, Any]:
+        spec = PoeModelClient._resolve_openai_reasoning_spec(model)
+        if spec is None:
+            return {}
+        allowed, default_value = spec
+        level = PoeModelClient._extract_thinking_level(context)
+        candidates_by_level = {
+            "quick": ("none", "minimal", "low", default_value),
+            "balanced": ("medium", "low", default_value),
+            "deep": ("xhigh", "high", "medium", default_value),
+        }
+        for candidate in candidates_by_level.get(level, (default_value,)):
+            if candidate in allowed:
+                return {"reasoning_effort": candidate}
+        if default_value in allowed:
+            return {"reasoning_effort": default_value}
+        return {"reasoning_effort": allowed[0]}
+
+    @staticmethod
+    def _extract_thinking_level(context: dict[str, Any]) -> str:
+        model_settings = context.get("model_settings", {})
+        if not isinstance(model_settings, dict):
+            return "balanced"
+        level = str(model_settings.get("thinking_level", "balanced")).strip().lower()
+        if level in {"quick", "balanced", "deep"}:
+            return level
+        return "balanced"
+
+    @staticmethod
+    def _resolve_openai_reasoning_spec(model: str) -> tuple[tuple[str, ...], str] | None:
+        normalized = model.strip().lower()
+        for prefix, allowed, default_value in PoeModelClient._OPENAI_REASONING_SPECS:
+            if normalized.startswith(prefix):
+                return allowed, default_value
+        return None
+
+    @staticmethod
+    def thinking_support_summary(model: str) -> str:
+        raw = model.strip().lower()
+        if raw.startswith("openai/"):
+            model_name = raw.split("/", 1)[1]
+            spec = PoeModelClient._resolve_openai_reasoning_spec(model_name)
+            if spec is None:
+                return "openai(default)"
+            allowed, _default = spec
+            return "reasoning:" + "/".join(allowed)
+        return "prompt-only"
 
     def _translate_provider_error(self, model: str, exc: Exception) -> ModelProviderError:
         chain = self._exception_chain(exc)

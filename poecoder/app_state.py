@@ -14,6 +14,7 @@ from poecoder.services.memory_service import MemoryService
 from poecoder.services.model_catalog import ModelCatalog
 from poecoder.services.model_clients import PoeModelClient
 from poecoder.services.model_profile_service import ModelProfileService
+from poecoder.services.provider_secret_service import ProviderSecretService
 from poecoder.services.review_service import ReviewService
 from poecoder.services.session_service import SessionService
 from poecoder.services.shell_service import ShellService
@@ -42,6 +43,7 @@ class AppState:
     model_profiles: ModelProfileService
     usage: UsageService
     reviews: ReviewService
+    provider_secrets: ProviderSecretService
     tools: ToolRuntime
     turns: TurnService
     tasks: TaskService
@@ -82,6 +84,7 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         default_thinking_budget=settings.reviewer_thinking_budget,
         command_catalog_provider=lambda: [],
     )
+    provider_secrets = ProviderSecretService(path=settings.home_dir / "provider_secrets.enc.json")
 
     root = workspace_root or Path.cwd()
     code_tools = CodeTools(root=root.resolve())
@@ -100,6 +103,8 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         model_catalog=model_catalog,
         web_tools=web_tools,
         usage_service=usage,
+        settings=settings,
+        model_client=model_client,
         review_service=reviews,
     )
     reviews.command_catalog_provider = tools.command_catalog
@@ -137,6 +142,7 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
         model_profiles=model_profiles,
         usage=usage,
         reviews=reviews,
+        provider_secrets=provider_secrets,
         tools=tools,
         turns=turns,
         tasks=tasks,
