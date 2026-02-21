@@ -75,7 +75,6 @@ class PoeCoderCLI:
         self.state.thinking_level = self.settings.default_thinking_level
         self.state.thinking_budget = self.settings.default_thinking_budget
         self.http = httpx.Client(timeout=90.0)
-        self.async_http = httpx.AsyncClient(timeout=90.0)
         self.direct_model_client = PoeModelClient(self.settings.poe_api_url, self.settings.poe_api_key)
         self.style = Style()
         self.i18n = Translator(lang=normalize_lang(lang or self.settings.lang))
@@ -385,6 +384,11 @@ class PoeCoderCLI:
                     asyncio.run(self._run_backend_turn(raw, images))
                 except httpx.HTTPError as exc:
                     self._render_backend_error(exc)
+                except RuntimeError as exc:
+                    if "Event loop is closed" in str(exc):
+                        self._render_backend_error(exc)
+                    else:
+                        raise
 
     def _handle_command(self, raw: str) -> bool:
         parts = shlex.split(raw)
@@ -908,58 +912,59 @@ class PoeCoderCLI:
             "metadata": {},
         }
         saw_delta = False
-        async with self.async_http.stream(
-            "POST",
-            f"{self.state.backend_url}/turns/execute/stream",
-            json=payload,
-            headers={"Accept": "text/event-stream"},
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                event = json.loads(line[6:])
-                etype = event.get("type")
-                data = event.get("data")
-                if etype == "status":
-                    status_key = str(data)
-                    label = self._t(f"status.{status_key}")
-                    if label.startswith("status."):
-                        label = status_key
-                    print(self.style.dim(f"[{label}]"))
-                    continue
-                if etype == "model":
-                    print(self.style.info(self._t("stream.model", model=data.get("model"))))
-                    continue
-                if etype == "tool":
-                    name = data.get("name", "tool")
-                    print(self.style.info(self._t("stream.tool", name=name)))
-                    continue
-                if etype == "delta":
-                    if not saw_delta:
-                        print(self.style.title(self._t("stream.assistant")), end="")
-                        saw_delta = True
-                    print(data, end="", flush=True)
-                    continue
-                if etype == "final":
-                    if saw_delta:
-                        print()
-                        meta = data if isinstance(data, dict) else {}
-                        if meta.get("model"):
-                            self.state.active_model = str(meta.get("model"))
-                        print(
-                            self.style.dim(
-                                self._t(
-                                    "stream.done",
-                                    model=meta.get("model"),
-                                    tools=len(meta.get("tool_events", [])),
+        async with httpx.AsyncClient(timeout=90.0) as async_http:
+            async with async_http.stream(
+                "POST",
+                f"{self.state.backend_url}/turns/execute/stream",
+                json=payload,
+                headers={"Accept": "text/event-stream"},
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    event = json.loads(line[6:])
+                    etype = event.get("type")
+                    data = event.get("data")
+                    if etype == "status":
+                        status_key = str(data)
+                        label = self._t(f"status.{status_key}")
+                        if label.startswith("status."):
+                            label = status_key
+                        print(self.style.dim(f"[{label}]"))
+                        continue
+                    if etype == "model":
+                        print(self.style.info(self._t("stream.model", model=data.get("model"))))
+                        continue
+                    if etype == "tool":
+                        name = data.get("name", "tool")
+                        print(self.style.info(self._t("stream.tool", name=name)))
+                        continue
+                    if etype == "delta":
+                        if not saw_delta:
+                            print(self.style.title(self._t("stream.assistant")), end="")
+                            saw_delta = True
+                        print(data, end="", flush=True)
+                        continue
+                    if etype == "final":
+                        if saw_delta:
+                            print()
+                            meta = data if isinstance(data, dict) else {}
+                            if meta.get("model"):
+                                self.state.active_model = str(meta.get("model"))
+                            print(
+                                self.style.dim(
+                                    self._t(
+                                        "stream.done",
+                                        model=meta.get("model"),
+                                        tools=len(meta.get("tool_events", [])),
+                                    )
                                 )
                             )
-                        )
-                    else:
-                        text = data.get("output_text", "") if isinstance(data, dict) else ""
-                        print(text)
-                    continue
+                        else:
+                            text = data.get("output_text", "") if isinstance(data, dict) else ""
+                            print(text)
+                        continue
 
     async def _run_direct_turn(self, prompt: str, images: list[str] | None = None) -> None:
         direct_context = dict(self.state.local_context)

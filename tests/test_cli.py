@@ -68,3 +68,26 @@ def test_cli_prompts_for_api_key_when_missing(monkeypatch) -> None:
     cli.start()
     assert cli.settings.poe_api_key == "poe-demo-key"
     assert cli.direct_model_client.api_key == "poe-demo-key"
+
+
+def test_cli_runtime_event_loop_closed_is_handled(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+
+    def fake_session(mode: str) -> None:
+        cli.state.session_id = "s1"
+
+    async def fail_turn(prompt: str, images=None):
+        raise RuntimeError("Event loop is closed")
+
+    responses = iter(["show your model", "/quit"])
+    monkeypatch.setattr(cli, "_ensure_session", fake_session)
+    monkeypatch.setattr(cli, "_prompt_api_key", lambda: "")
+    monkeypatch.setattr(cli, "_run_backend_turn", fail_turn)
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(responses))
+
+    cli.start()
