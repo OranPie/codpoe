@@ -283,6 +283,20 @@ async def turn_execute_stream(req: TurnRequest) -> StreamingResponse:
         except ModelProviderError as exc:
             payload = json.dumps({"type": "error", "data": exc.to_payload()}, ensure_ascii=True)
             yield f"data: {payload}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            payload = json.dumps(
+                {
+                    "type": "error",
+                    "data": {
+                        "provider": "backend",
+                        "code": "stream_internal_error",
+                        "detail": str(exc),
+                        "retryable": True,
+                    },
+                },
+                ensure_ascii=True,
+            )
+            yield f"data: {payload}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 

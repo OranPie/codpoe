@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
@@ -28,18 +29,31 @@ class TurnService:
 
     async def execute(self, req: TurnRequest) -> TurnResult:
         session, context, model, system_message, decision = self._prepare_turn(req)
+        first_context = self._with_turn_phase(context, "tool_or_answer")
 
         first = await self.model_client.chat(
             model=model,
             system_message=system_message,
             user_prompt=req.user_prompt,
-            context=context,
+            context=first_context,
             images=req.images,
         )
 
         tool_calls = parse_tool_calls(first.text)
         tool_events: list[dict[str, Any]] = []
         output_text = first.text
+        repair_attempt = 0
+        while not tool_calls and self._needs_repair_output(output_text) and repair_attempt < 2:
+            repair_attempt += 1
+            repaired = await self.model_client.chat(
+                model=model,
+                system_message=system_message,
+                user_prompt=self._repair_prompt(req.user_prompt, repair_attempt),
+                context=self._with_turn_phase(context, "tool_or_answer", repair_attempt=repair_attempt),
+                images=req.images,
+            )
+            output_text = repaired.text
+            tool_calls = parse_tool_calls(output_text)
 
         if tool_calls:
             for call in tool_calls:
@@ -55,13 +69,17 @@ class TurnService:
                 req.user_prompt
                 + "\n\nTool results:\n"
                 + json.dumps(tool_events, ensure_ascii=True)
-                + "\nSynthesize final answer."
+                + "\n\nTurn phase: final_response."
+                + "\nYou can answer in multiple turns. This is the final-response turn after tool execution."
+                + "\nDo not emit placeholder markdown or fake tool calls."
+                + "\nNow synthesize the final user-facing answer."
             )
+            second_context = self._with_turn_phase(context, "final_response", tool_events=tool_events)
             second = await self.model_client.chat(
                 model=model,
                 system_message=system_message,
                 user_prompt=second_prompt,
-                context=context,
+                context=second_context,
                 images=req.images,
             )
             output_text = second.text
@@ -79,6 +97,7 @@ class TurnService:
         await asyncio.sleep(0)
 
         session, context, model, system_message, decision = self._prepare_turn(req)
+        first_context = self._with_turn_phase(context, "tool_or_answer")
         yield {"type": "model", "data": {"model": model}}
 
         # First response stream (low latency path)
@@ -88,7 +107,7 @@ class TurnService:
             model=model,
             system_message=system_message,
             user_prompt=req.user_prompt,
-            context=context,
+            context=first_context,
             images=req.images,
         ):
             first_chunks.append(chunk)
@@ -96,6 +115,22 @@ class TurnService:
 
         first_text = "".join(first_chunks)
         tool_calls = parse_tool_calls(first_text)
+        repair_attempt = 0
+        while not tool_calls and self._needs_repair_output(first_text) and repair_attempt < 2:
+            repair_attempt += 1
+            repaired_text = ""
+            yield {"type": "status", "data": "responding"}
+            async for chunk in self.model_client.chat_stream(
+                model=model,
+                system_message=system_message,
+                user_prompt=self._repair_prompt(req.user_prompt, repair_attempt),
+                context=self._with_turn_phase(context, "tool_or_answer", repair_attempt=repair_attempt),
+                images=req.images,
+            ):
+                repaired_text += chunk
+                yield {"type": "delta", "data": chunk}
+            first_text = repaired_text
+            tool_calls = parse_tool_calls(first_text)
         tool_events: list[dict[str, Any]] = []
         output_text = first_text
 
@@ -116,15 +151,19 @@ class TurnService:
                 req.user_prompt
                 + "\n\nTool results:\n"
                 + json.dumps(tool_events, ensure_ascii=True)
-                + "\nSynthesize final answer."
+                + "\n\nTurn phase: final_response."
+                + "\nYou can answer in multiple turns. This is the final-response turn after tool execution."
+                + "\nDo not emit placeholder markdown or fake tool calls."
+                + "\nNow synthesize the final user-facing answer."
             )
+            second_context = self._with_turn_phase(context, "final_response", tool_events=tool_events)
             output_text = ""
             yield {"type": "status", "data": "responding"}
             async for chunk in self.model_client.chat_stream(
                 model=model,
                 system_message=system_message,
                 user_prompt=second_prompt,
-                context=context,
+                context=second_context,
                 images=req.images,
             ):
                 output_text += chunk
@@ -252,3 +291,54 @@ class TurnService:
             "global": [item.model_dump(mode="json") for item in global_entries],
             "query_hits": [item.model_dump(mode="json") for item in query_entries],
         }
+
+    @staticmethod
+    def _with_turn_phase(
+        context: dict[str, Any],
+        phase: str,
+        tool_events: list[dict[str, Any]] | None = None,
+        repair_attempt: int = 0,
+    ) -> dict[str, Any]:
+        out = dict(context)
+        out["turn_protocol"] = {
+            "phase": phase,
+            "multi_stage": True,
+            "tool_events_count": len(tool_events or []),
+            "repair_attempt": repair_attempt,
+        }
+        return out
+
+    @staticmethod
+    def _repair_prompt(user_prompt: str, repair_attempt: int) -> str:
+        return (
+            user_prompt
+            + f"\n\nPrevious response looked incomplete (status/filler text). Repair attempt #{repair_attempt}."
+            + "\nReply correctly now:"
+            + "\n- If tools are needed, output only strict @tool lines."
+            + "\n- Otherwise output a direct final answer."
+            + "\n- No placeholder markdown and no filler text."
+        )
+
+    @staticmethod
+    def _needs_repair_output(text: str) -> bool:
+        stripped = (text or "").strip()
+        if not stripped:
+            return True
+        lowered = stripped.lower()
+        if "@tool " in lowered:
+            return False
+        filler_matches = re.findall(
+            r"(thinking\.{3}(?: \(\d+s elapsed\))?|generating\.{3}(?: \(\d+s elapsed\))?)",
+            lowered,
+        )
+        if filler_matches:
+            filler_chars = sum(len(item) for item in filler_matches)
+            if filler_chars >= int(len(lowered) * 0.6):
+                return True
+        if lowered.startswith("thinking...") and "@tool " not in stripped and len(stripped) < 120:
+            return True
+        if lowered.startswith("generating...") and "@tool " not in stripped and len(stripped) < 120:
+            return True
+        if "mistake tool call placeholder" in lowered:
+            return True
+        return False

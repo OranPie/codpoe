@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from poecoder.models import (
@@ -48,6 +49,7 @@ class ToolRuntime:
     review_service: ReviewService | None = None
     task_service: "TaskService | None" = None
     leader_service: "LeaderService | None" = None
+    cwd: str = "."
 
     def command_catalog(self) -> list[dict[str, Any]]:
         return [
@@ -55,6 +57,8 @@ class ToolRuntime:
             {"name": "ReadStruct", "args": "target,language,dependency_depth", "effect": "Read symbol/structure summary"},
             {"name": "ReadRecursive", "args": "seed_files,boundary", "effect": "Expand related files recursively"},
             {"name": "Search", "args": "pattern,file_pattern,boundary,root", "effect": "Regex search with snippets"},
+            {"name": "ListFile", "args": "path?,pattern?,recursive?,include_dirs?,limit?", "effect": "List files under current/target directory"},
+            {"name": "ChangeWorkDir", "args": "path", "effect": "Change tool working directory"},
             {"name": "WriteRaw", "args": "file,line,content,append?", "effect": "Insert/append raw text in file"},
             {"name": "WriteReplace", "args": "pattern,replacement,location,max_changes", "effect": "Regex replace in files"},
             {"name": "GetWebRaw", "args": "url,timeout_s,max_chars,headers?", "effect": "Fetch raw web content"},
@@ -86,6 +90,7 @@ class ToolRuntime:
             {"name": "WaitLeaderRun", "args": "run_id,timeout_s?", "effect": "Wait for leader run completion"},
             {"name": "CancelLeaderRun", "args": "run_id", "effect": "Cancel active leader run"},
             {"name": "RunShell", "args": "session_id,command,danger_level,cwd?,timeout_s?", "effect": "Run shell command with policy"},
+            {"name": "Exit", "args": "reason?", "effect": "Signal exit request from model/user"},
             {"name": "WikiQuery", "args": "project_id,query,limit?", "effect": "Query project wiki"},
             {"name": "WikiCompact", "args": "project_id", "effect": "Compact wiki docs"},
             {"name": "GetBalance", "args": "", "effect": "Read Poe balance"},
@@ -115,18 +120,39 @@ class ToolRuntime:
             )
 
     async def _dispatch(self, name: str, args: dict[str, Any]) -> Any:
+        if name == "ListFile":
+            return self._list_file(**args)
+        if name == "ChangeWorkDir":
+            path = args.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise ValueError("ChangeWorkDir requires path")
+            return self._change_workdir(path)
         if name == "ReadRaw":
-            return self.code_tools.read_raw(**args)
+            read_args = dict(args)
+            read_args["file"] = self._resolve_tool_path(str(read_args["file"]))
+            return self.code_tools.read_raw(**read_args)
         if name == "ReadStruct":
-            return self.code_tools.read_struct(**args)
+            read_args = dict(args)
+            read_args["target"] = self._resolve_tool_path(str(read_args["target"]))
+            return self.code_tools.read_struct(**read_args)
         if name in {"ReadRecursive", "ReadRecurisive"}:
-            return self.code_tools.read_recursive(**args)
+            read_args = dict(args)
+            read_args["seed_files"] = [self._resolve_tool_path(str(item)) for item in args.get("seed_files", [])]
+            return self.code_tools.read_recursive(**read_args)
         if name == "WriteRaw":
-            return self.code_tools.write_raw(**args)
+            write_args = dict(args)
+            write_args["file"] = self._resolve_tool_path(str(write_args["file"]))
+            return self.code_tools.write_raw(**write_args)
         if name == "WriteReplace":
-            return self.code_tools.write_replace(**args)
+            write_args = dict(args)
+            location = str(write_args.get("location", "."))
+            write_args["location"] = self._resolve_tool_path(location)
+            return self.code_tools.write_replace(**write_args)
         if name == "Search":
-            return self.code_tools.search(**args)
+            search_args = dict(args)
+            root = str(search_args.get("root", "."))
+            search_args["root"] = self._resolve_tool_path(root)
+            return self.code_tools.search(**search_args)
 
         if name == "TmpWrite":
             return self._tmp_write(**args)
@@ -265,7 +291,16 @@ class ToolRuntime:
             return self.leader_service.cancel(args["run_id"]).model_dump(mode="json")
 
         if name == "RunShell":
-            return (await self.shell_service.run(**args)).model_dump(mode="json")
+            run_args = dict(args)
+            cwd = run_args.get("cwd")
+            if cwd is None:
+                run_args["cwd"] = str(self._absolute_cwd())
+            else:
+                run_args["cwd"] = str(self._absolute_cwd(str(cwd)))
+            return (await self.shell_service.run(**run_args)).model_dump(mode="json")
+
+        if name == "Exit":
+            return {"exit": True, "reason": str(args.get("reason", "requested"))}
 
         if name == "WikiQuery":
             return self.wiki_service.query(**args)
@@ -273,6 +308,46 @@ class ToolRuntime:
             return self.wiki_service.compact(**args)
 
         raise KeyError(f"unknown tool: {name}")
+
+    def _list_file(
+        self,
+        path: str = ".",
+        pattern: str = "*",
+        recursive: bool = False,
+        include_dirs: bool = False,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        return self.code_tools.list_files(
+            path=self._resolve_tool_path(path),
+            pattern=pattern,
+            recursive=recursive,
+            include_dirs=include_dirs,
+            limit=int(limit),
+        )
+
+    def _change_workdir(self, path: str) -> dict[str, Any]:
+        resolved = self.code_tools._resolve(self._resolve_tool_path(path))
+        if not resolved.exists() or not resolved.is_dir():
+            raise ValueError(f"not a directory: {resolved}")
+        self.cwd = str(resolved.relative_to(self.code_tools.root))
+        if self.cwd == ".":
+            self.cwd = "."
+        return {"cwd": self.cwd, "absolute": str(resolved)}
+
+    def _resolve_tool_path(self, path: str) -> str:
+        value = (path or ".").strip()
+        if not value:
+            value = "."
+        p = Path(value)
+        if p.is_absolute():
+            return value
+        if self.cwd in {"", "."}:
+            return value
+        return str(Path(self.cwd) / value)
+
+    def _absolute_cwd(self, path: str | None = None) -> Path:
+        target = self.cwd if path is None else self._resolve_tool_path(path)
+        return self.code_tools._resolve(target)
 
     def _tmp_write(self, name: str, content: str, ttl_seconds: int = 3600) -> dict[str, Any]:
         from datetime import datetime, timedelta, timezone
@@ -304,15 +379,33 @@ class ToolRuntime:
 
 def parse_tool_calls(text: str) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("@tool "):
+    decoder = json.JSONDecoder()
+    marker = "@tool "
+    pos = 0
+    while True:
+        idx = text.find(marker, pos)
+        if idx < 0:
+            break
+        cursor = idx + len(marker)
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        end = cursor
+        while end < len(text) and (text[end].isalnum() or text[end] in {"_", "-"}):
+            end += 1
+        name = text[cursor:end]
+        if not name:
+            pos = idx + len(marker)
+            continue
+        brace = text.find("{", end)
+        if brace < 0:
+            pos = end
             continue
         try:
-            _, rest = line.split("@tool ", 1)
-            name, raw_args = rest.split(" ", 1)
-            args = json.loads(raw_args)
-            calls.append({"name": name, "args": args})
+            args, consumed = decoder.raw_decode(text[brace:])
         except Exception:
+            pos = brace + 1
             continue
+        if isinstance(args, dict):
+            calls.append({"name": name, "args": args})
+        pos = brace + consumed
     return calls

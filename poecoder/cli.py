@@ -65,6 +65,12 @@ class Style:
         return self._wrap(text, "31")
 
 
+class StreamEventError(httpx.HTTPError):
+    def __init__(self, message: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 class PoeCoderCLI:
     def __init__(self, backend_url: str, direct: bool, model: str | None, lang: str | None) -> None:
         self._configure_line_editing()
@@ -1020,14 +1026,29 @@ class PoeCoderCLI:
             try:
                 saw_delta = await self._stream_backend_turn(async_http, payload)
                 return
-            except httpx.HTTPError:
+            except httpx.HTTPError as exc:
                 # If we already emitted partial assistant output, avoid replaying the request.
                 if saw_delta:
                     print()
                     raise
+                if not self._should_retry_stream_error(exc):
+                    raise
                 print(self.style.dim(self._t("msg.stream_retry_nonstream")))
                 payload = await self._run_backend_turn_nonstream(async_http, payload)
                 self._render_backend_nonstream_result(payload)
+
+    @staticmethod
+    def _should_retry_stream_error(exc: Exception) -> bool:
+        if isinstance(exc, StreamEventError):
+            return bool(exc.retryable)
+        retryable = (
+            httpx.ReadTimeout,
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+            httpx.WriteError,
+            httpx.ReadError,
+        )
+        return isinstance(exc, retryable)
 
     async def _stream_backend_turn(self, async_http: httpx.AsyncClient, payload: dict[str, Any]) -> bool:
         saw_delta = False
@@ -1069,12 +1090,14 @@ class PoeCoderCLI:
                         code = data.get("code", "error")
                         detail = data.get("detail", "backend stream error")
                         hint = data.get("hint")
+                        retryable = bool(data.get("retryable", False))
                         rendered = f"{code}: {detail}"
                         if hint:
                             rendered += f" (hint: {hint})"
                     else:
+                        retryable = False
                         rendered = str(data)
-                    raise httpx.HTTPError(rendered)
+                    raise StreamEventError(rendered, retryable=retryable)
                 if etype == "final":
                     if saw_delta:
                         print()

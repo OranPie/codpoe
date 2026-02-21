@@ -123,6 +123,9 @@ class ModelProfileService:
             quality = int(profile["quality_tier"])
             cost = int(profile["cost_tier"])
             context = int(profile["max_context_hint"])
+            if model.lower() == "assistant":
+                # Runtime override for legacy seeded rows: treat generic assistant as a small utility model.
+                speed, quality, cost, context = 5, 1, 1, 32000
 
             if complexity == "large":
                 score += quality * 4 + context // 20000
@@ -131,6 +134,9 @@ class ModelProfileService:
             else:
                 score += speed * 3 - cost
 
+            if complexity in {"medium", "large"} and "codex" in model.lower():
+                score += 4
+
             if thinking_level == "deep":
                 score += quality * 4 + budget_factor * 2 - speed
             elif thinking_level == "quick":
@@ -138,7 +144,7 @@ class ModelProfileService:
             else:
                 score += quality + speed
 
-            if score > best_score:
+            if score > best_score or (score == best_score and model == fallback_model):
                 best_score = score
                 best_model = model
         return best_model

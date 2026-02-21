@@ -22,7 +22,7 @@ class ModelRouter:
             "recursive",
             "dependency",
         )
-        medium_signals = ("implement", "fix", "test", "search", "replace")
+        medium_signals = ("implement", "fix", "test", "search", "replace", "list", "cwd", "directory", "file")
 
         if any(signal in text for signal in heavy_signals) or context_size_hint > 8000 or tool_count_hint > 6:
             complexity = "large"

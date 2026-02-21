@@ -15,6 +15,10 @@ def test_main_system_message_contains_tool_protocol() -> None:
     assert "Do not fabricate" in MAIN_SYSTEM_MESSAGE
     assert "command_catalog" in MAIN_SYSTEM_MESSAGE
     assert "InstallCommand" in MAIN_SYSTEM_MESSAGE
+    assert "call a tool first" in MAIN_SYSTEM_MESSAGE
+    assert "placeholder markdown" in MAIN_SYSTEM_MESSAGE
+    assert "Turn protocol is multi-stage" in MAIN_SYSTEM_MESSAGE
+    assert "multiple model turns" in MAIN_SYSTEM_MESSAGE
 
 
 def test_subagent_modifier_is_included() -> None:

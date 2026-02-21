@@ -227,9 +227,13 @@ def test_turn_model_tool_communication(monkeypatch, tmp_path):
     async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
+            assert context["turn_protocol"]["phase"] == "tool_or_answer"
             return ModelReply(text='@tool GetBalance {}', raw={"mock": True})
         assert "Tool results:" in user_prompt
         assert "current_point_balance" in user_prompt
+        assert "final-response turn" in user_prompt
+        assert context["turn_protocol"]["phase"] == "final_response"
+        assert context["turn_protocol"]["tool_events_count"] == 1
         return ModelReply(text="balance checked", raw={"mock": True})
 
     monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
@@ -286,6 +290,49 @@ def test_turn_execute_maps_provider_errors(monkeypatch, tmp_path):
     assert "non-SSE" in detail["detail"]
 
 
+def test_turn_repair_retry_for_incomplete_first_reply(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    monkeypatch.setattr(
+        type(api.STATE.usage),
+        "get_current_balance",
+        lambda self: {"current_point_balance": 777, "fetched_at": "now", "source": "mock"},
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return ModelReply(
+                text="Generating...Generating...Generating...Generating... (2s elapsed)Generating... (3s elapsed)",
+                raw={"mock": True},
+            )
+        if call_count["n"] == 2:
+            assert "Previous response looked incomplete" in user_prompt
+            assert context["turn_protocol"]["repair_attempt"] == 1
+            return ModelReply(text='@tool GetBalance {}', raw={"mock": True})
+        assert "Tool results:" in user_prompt
+        return ModelReply(text="done-after-repair", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    turn_resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "check balance"})
+    assert turn_resp.status_code == 200
+    payload = turn_resp.json()
+    assert payload["output_text"] == "done-after-repair"
+    assert call_count["n"] == 3
+    assert payload["tool_events"][0]["name"] == "GetBalance"
+
+
 def test_turn_stream_emits_error_event_on_provider_failure(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -323,6 +370,38 @@ def test_turn_stream_emits_error_event_on_provider_failure(monkeypatch, tmp_path
     errors = [event["data"] for event in events if event.get("type") == "error"]
     assert len(errors) == 1
     assert errors[0]["code"] == "poe_non_sse_error"
+
+
+def test_turn_stream_emits_error_event_on_internal_failure(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def broken_execute_stream(self, req):
+        raise RuntimeError("boom-stream")
+        yield {"type": "status", "data": "never"}  # pragma: no cover
+
+    monkeypatch.setattr(type(api.STATE.turns), "execute_stream", broken_execute_stream)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    events: list[dict[str, object]] = []
+    with client.stream(
+        "POST",
+        "/turns/execute/stream",
+        json={"session_id": session_id, "user_prompt": "hello"},
+    ) as resp:
+        assert resp.status_code == 200
+        for line in resp.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    errors = [event["data"] for event in events if event.get("type") == "error"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == "stream_internal_error"
+    assert errors[0]["retryable"] is True
 
 
 def test_turn_stream_emits_delta_and_final(monkeypatch, tmp_path):
