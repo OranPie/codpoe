@@ -211,9 +211,15 @@ class TurnService:
         decision = self.router.decide(req.user_prompt, context_size_hint=len(json.dumps(context)), tool_count_hint=0)
         thinking_level = req.thinking_level or session.thinking_level
         thinking_budget = req.thinking_budget or session.thinking_budget
+        show_think_details = (
+            bool(req.metadata.get("show_think_details"))
+            if isinstance(req.metadata.get("show_think_details"), bool)
+            else session.show_think_details
+        )
         context["model_settings"] = {
             "thinking_level": thinking_level,
             "thinking_budget": thinking_budget,
+            "show_think_details": show_think_details,
         }
         model = decision.selected_model if session.active_model in {"", "auto"} else session.active_model
         try:
@@ -232,6 +238,12 @@ class TurnService:
             )
 
         system_message = req.system_message or default_system_message_for_mode(session.mode)
+        if not show_think_details:
+            system_message += (
+                "\n\nOutput style:\n"
+                "- Do not emit progress filler like 'Thinking...' or 'Generating...'.\n"
+                "- Return either strict @tool lines or the final answer."
+            )
         if session.encourage_model_command_create:
             system_message += (
                 "\n\nCommand autonomy hint:\n"
@@ -272,6 +284,7 @@ class TurnService:
         self.sessions.put_context(session_id, "router_decision", decision.model_dump(mode="json"), scope="turn")
         self.sessions.put_context(session_id, "last_user_prompt", user_prompt, scope="turn")
         self.sessions.put_context(session_id, "last_model_output", output_text, scope="turn")
+        self.sessions.maybe_update_title_from_turn(session_id, user_prompt, output_text)
         self.sessions.touch(session_id)
 
     def _load_memory(self, session_id: str, project_id: str, query: str) -> dict[str, list[dict[str, Any]]]:

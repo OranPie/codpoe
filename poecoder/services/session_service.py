@@ -24,18 +24,20 @@ class SessionService:
         self.db.execute(
             """
             INSERT INTO sessions(
-                id, mode, active_model, thinking_level, thinking_budget,
+                id, title, mode, active_model, thinking_level, thinking_budget, show_think_details,
                 allow_model_command_create, encourage_model_command_create,
                 policy_profile, project_id, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
+                "",
                 req.mode,
                 active_model,
                 req.thinking_level,
                 req.thinking_budget,
+                1 if req.show_think_details else 0,
                 1 if req.allow_model_command_create else 0,
                 1 if req.encourage_model_command_create else 0,
                 req.policy_profile,
@@ -46,16 +48,52 @@ class SessionService:
         )
         return self.get(session_id)
 
+    def list(self, project_id: str | None = None, limit: int = 20) -> list[SessionResponse]:
+        query = "SELECT * FROM sessions"
+        params: tuple[object, ...]
+        if project_id:
+            query += " WHERE project_id = ?"
+            params = (project_id, limit)
+            query += " ORDER BY updated_at DESC LIMIT ?"
+        else:
+            params = (limit,)
+            query += " ORDER BY updated_at DESC LIMIT ?"
+        rows = self.db.query_all(query, params)
+        return [self._row_to_session(row) for row in rows]
+
     def get(self, session_id: str) -> SessionResponse:
         row = self.db.query_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
         if row is None:
             raise KeyError(f"session not found: {session_id}")
+        return self._row_to_session(row)
+
+    def update_title(self, session_id: str, title: str) -> SessionResponse:
+        clean = self._normalize_title(title)
+        self.db.execute(
+            "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
+            (clean, utcnow_iso(), session_id),
+        )
+        return self.get(session_id)
+
+    def maybe_update_title_from_turn(self, session_id: str, user_prompt: str, model_output: str) -> SessionResponse:
+        current = self.get(session_id)
+        if current.title.strip():
+            return current
+        candidate = self._derive_title(user_prompt, model_output)
+        if not candidate:
+            return current
+        return self.update_title(session_id, candidate)
+
+    @staticmethod
+    def _row_to_session(row: object) -> SessionResponse:
         return SessionResponse(
             id=row["id"],
+            title=str(row["title"] or ""),
             mode=row["mode"],
             active_model=row["active_model"],
             thinking_level=row["thinking_level"],
             thinking_budget=int(row["thinking_budget"]),
+            show_think_details=bool(int(row["show_think_details"])),
             allow_model_command_create=bool(int(row["allow_model_command_create"])),
             encourage_model_command_create=bool(int(row["encourage_model_command_create"])),
             policy_profile=row["policy_profile"],
@@ -70,6 +108,32 @@ class SessionService:
             (utcnow_iso(), session_id),
         )
 
+    @staticmethod
+    def _normalize_title(value: str, max_len: int = 72) -> str:
+        text = re.sub(r"\s+", " ", value).strip()
+        if not text:
+            return ""
+        if len(text) <= max_len:
+            return text
+        if max_len <= 3:
+            return text[:max_len]
+        return text[: max_len - 3].rstrip() + "..."
+
+    def _derive_title(self, user_prompt: str, model_output: str) -> str:
+        lines = [line.strip() for line in (model_output or "").splitlines() if line.strip()]
+        for raw in lines:
+            text = raw
+            lowered = text.lower()
+            if lowered.startswith("@tool "):
+                continue
+            if lowered.startswith("thinking...") or lowered.startswith("generating..."):
+                continue
+            text = re.sub(r"^#+\s*", "", text)
+            text = text.strip("-*` \t")
+            if len(text) >= 4:
+                return self._normalize_title(text)
+        return self._normalize_title(user_prompt)
+
 
     def change_model(self, session_id: str, model: str) -> SessionResponse:
         self.db.execute(
@@ -82,6 +146,13 @@ class SessionService:
         self.db.execute(
             "UPDATE sessions SET thinking_level = ?, thinking_budget = ?, updated_at = ? WHERE id = ?",
             (level, budget, utcnow_iso(), session_id),
+        )
+        return self.get(session_id)
+
+    def update_think_details(self, session_id: str, show_think_details: bool) -> SessionResponse:
+        self.db.execute(
+            "UPDATE sessions SET show_think_details = ?, updated_at = ? WHERE id = ?",
+            (1 if show_think_details else 0, utcnow_iso(), session_id),
         )
         return self.get(session_id)
 

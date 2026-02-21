@@ -11,10 +11,12 @@ from typing import Any, Iterator
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
     mode TEXT NOT NULL,
     active_model TEXT NOT NULL,
     thinking_level TEXT NOT NULL DEFAULT 'balanced',
     thinking_budget INTEGER NOT NULL DEFAULT 12000,
+    show_think_details INTEGER NOT NULL DEFAULT 0,
     allow_model_command_create INTEGER NOT NULL DEFAULT 1,
     encourage_model_command_create INTEGER NOT NULL DEFAULT 1,
     policy_profile TEXT NOT NULL,
@@ -194,8 +196,18 @@ class Database:
         )
         self._ensure_column(
             table="sessions",
+            column="title",
+            definition="TEXT NOT NULL DEFAULT ''",
+        )
+        self._ensure_column(
+            table="sessions",
             column="thinking_budget",
             definition="INTEGER NOT NULL DEFAULT 12000",
+        )
+        self._ensure_column(
+            table="sessions",
+            column="show_think_details",
+            definition="INTEGER NOT NULL DEFAULT 0",
         )
         self._ensure_column(
             table="sessions",

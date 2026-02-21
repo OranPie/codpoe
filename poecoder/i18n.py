@@ -17,10 +17,13 @@ Commands:
   /quit                               Exit CLI
   /login [api_key]                    Set/update Poe API key (prompt if omitted)
   /loginopenai [api_key]              Set/update OpenAI API key (prompt if omitted)
+  /sessions [limit]                   List resumable backend sessions
+  /resume <session_id|index>          Resume an existing backend session
   /system <text>                      Set system message
   /mode <coding|chat|planning|leader> Start new backend session in mode
   /plan                               Switch to planning mode + planning system message
   /thinking <quick|balanced|deep> [budget] Update thinking level and budget
+  /thinkdetails <on|off>              Toggle verbose thinking/progress details in model output
   /commandpolicy <allow|deny> [encourage|noencourage] Set model command autonomy
   /lang <en|zh-cn>                    Switch CLI language
   /image <path|url>                   Attach one image for next model/subagent request
@@ -67,8 +70,14 @@ Commands:
         "msg.message_cost": "message cost={cost} points (balance {before}->{after})",
         "msg.system_updated": "System message updated.",
         "msg.mode_set": "Mode set to {mode}",
+        "msg.session_resumed": "Resumed session={session_id} title={title}",
+        "msg.resume_backend_only": "Resume requires backend mode.",
+        "msg.resume_not_found": "Session not found for: {value}",
+        "msg.sessions_header": "sessions ({count})",
         "msg.invalid_mode": "Invalid mode: {mode}",
         "msg.thinking_updated": "Thinking updated: level={level} budget={budget}",
+        "msg.think_details_updated": "Think details output={value}",
+        "msg.think_details_usage": "Usage: /thinkdetails <on|off>",
         "msg.invalid_number": "Invalid number",
         "msg.invalid_thinking_level": "Invalid thinking level: {level}",
         "msg.command_policy_updated": "Command policy updated: allow={allow} encourage={encourage}",
@@ -119,6 +128,8 @@ Commands:
         "table.no": "no",
         "table.current": "current",
         "table.model": "model",
+        "table.mode": "mode",
+        "table.title": "title",
         "table.id": "id",
         "table.type": "type",
         "table.state": "state",
@@ -161,10 +172,13 @@ Commands:
   /quit                               退出 CLI
   /login [api_key]                    设置/更新 Poe API Key（省略则提示输入）
   /loginopenai [api_key]              设置/更新 OpenAI API Key（省略则提示输入）
+  /sessions [limit]                   列出可恢复的后端会话
+  /resume <session_id|index>          恢复已有后端会话
   /system <text>                      设置系统提示词
   /mode <coding|chat|planning|leader> 以指定模式创建后端会话
   /plan                               切换到规划模式并启用规划系统提示词
   /thinking <quick|balanced|deep> [budget] 更新思考等级与预算
+  /thinkdetails <on|off>              切换模型输出中的思考/进度细节显示
   /commandpolicy <allow|deny> [encourage|noencourage] 设置模型命令自治策略
   /lang <en|zh-cn>                    切换 CLI 语言
   /image <path|url>                   为下一次模型/子代理请求添加一张图片
@@ -211,8 +225,14 @@ Commands:
         "msg.message_cost": "单条消息成本={cost} 点（余额 {before}->{after}）",
         "msg.system_updated": "系统提示词已更新。",
         "msg.mode_set": "模式已切换为 {mode}",
+        "msg.session_resumed": "已恢复会话={session_id} 标题={title}",
+        "msg.resume_backend_only": "恢复会话仅支持后端模式。",
+        "msg.resume_not_found": "未找到会话：{value}",
+        "msg.sessions_header": "会话列表（{count}）",
         "msg.invalid_mode": "无效模式：{mode}",
         "msg.thinking_updated": "思考设置已更新：level={level} budget={budget}",
+        "msg.think_details_updated": "思考细节输出={value}",
+        "msg.think_details_usage": "用法：/thinkdetails <on|off>",
         "msg.invalid_number": "数字格式无效",
         "msg.invalid_thinking_level": "无效的思考等级：{level}",
         "msg.command_policy_updated": "命令策略已更新：allow={allow} encourage={encourage}",
@@ -263,6 +283,8 @@ Commands:
         "table.no": "序号",
         "table.current": "当前",
         "table.model": "模型",
+        "table.mode": "模式",
+        "table.title": "标题",
         "table.id": "ID",
         "table.type": "类型",
         "table.state": "状态",

@@ -12,6 +12,48 @@ from typing import Any
 class CodeTools:
     root: Path
 
+    def list_files(
+        self,
+        path: str = ".",
+        pattern: str = "*",
+        recursive: bool = False,
+        include_dirs: bool = False,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        base = self._resolve(path)
+        entries: list[str] = []
+        truncated = False
+
+        if base.is_file():
+            rel = str(base.relative_to(self.root))
+            return {
+                "path": str(base),
+                "entries": [rel],
+                "count": 1,
+                "truncated": False,
+            }
+
+        if not base.exists() or not base.is_dir():
+            raise ValueError(f"not a directory: {base}")
+
+        iterator = base.rglob(pattern) if recursive else base.glob(pattern)
+        for item in iterator:
+            if item.is_dir() and not include_dirs:
+                continue
+            if not include_dirs and not item.is_file():
+                continue
+            entries.append(str(item.relative_to(self.root)))
+            if len(entries) >= limit:
+                truncated = True
+                break
+
+        return {
+            "path": str(base),
+            "entries": entries,
+            "count": len(entries),
+            "truncated": truncated,
+        }
+
     def read_raw(self, file: str, line: int = 1, end_line: int | None = None) -> dict[str, Any]:
         path = self._resolve(file)
         text = path.read_text(encoding="utf-8")

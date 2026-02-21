@@ -15,7 +15,10 @@ def test_translator_zhcn_strings() -> None:
     assert "命令" in tr.t("cli.help")
     assert "/leader" in tr.t("cli.help")
     assert "/login" in tr.t("cli.help")
+    assert "/resume" in tr.t("cli.help")
+    assert "/thinkdetails" in tr.t("cli.help")
     assert tr.t("msg.current_balance", points=12) == "当前余额：12 点"
+    assert tr.t("msg.message_cost", cost=3, before=10, after=7).startswith("单条消息成本=3")
     assert tr.t("table.model") == "模型"
     assert tr.t("msg.current_model", model="assistant") == "当前模型=assistant"
     assert tr.t("msg.plan_mode_enabled").startswith("已切换到规划模式")

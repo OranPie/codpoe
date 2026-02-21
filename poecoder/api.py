@@ -45,6 +45,7 @@ from poecoder.models import (
     ReviewRequest,
     ReviewSettingsRequest,
     SessionCommandPolicyRequest,
+    SessionThinkDetailsRequest,
     SessionThinkingRequest,
     ToolCall,
     TaskStartSubagentRequest,
@@ -141,6 +142,13 @@ def create_session(req: SessionCreateRequest) -> dict[str, Any]:
     return state.sessions.create(req).model_dump(mode="json")
 
 
+@app.get("/sessions")
+def list_sessions(limit: int = 20, project_id: str | None = None) -> list[dict[str, Any]]:
+    state = get_state()
+    rows = state.sessions.list(project_id=project_id, limit=limit)
+    return [item.model_dump(mode="json") for item in rows]
+
+
 @app.get("/sessions/{session_id}")
 def get_session(session_id: str) -> dict[str, Any]:
     state = get_state()
@@ -209,6 +217,16 @@ def session_update_thinking(session_id: str, req: SessionThinkingRequest) -> dic
     state = get_state()
     try:
         updated = state.sessions.update_thinking(session_id, req.thinking_level, req.thinking_budget)
+        return updated.model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/sessions/{session_id}/think-details")
+def session_update_think_details(session_id: str, req: SessionThinkDetailsRequest) -> dict[str, Any]:
+    state = get_state()
+    try:
+        updated = state.sessions.update_think_details(session_id, req.show_think_details)
         return updated.model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

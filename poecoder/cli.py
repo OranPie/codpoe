@@ -25,10 +25,12 @@ from poecoder.services.model_clients import PoeModelClient
 class CliState:
     backend_url: str
     session_id: str | None = None
+    session_title: str = ""
     mode: str = "coding"
     active_model: str | None = None
     thinking_level: str = "balanced"
     thinking_budget: int = 12000
+    show_think_details: bool = False
     allow_model_command_create: bool = True
     encourage_model_command_create: bool = True
     system_message: str = ""
@@ -80,6 +82,7 @@ class PoeCoderCLI:
         self.state = CliState(backend_url=backend_url)
         self.state.thinking_level = self.settings.default_thinking_level
         self.state.thinking_budget = self.settings.default_thinking_budget
+        self.state.show_think_details = self.settings.default_show_think_details
         self.http = httpx.Client(timeout=90.0)
         self.direct_model_client = PoeModelClient(
             api_url=self.settings.poe_api_url,
@@ -183,6 +186,52 @@ class PoeCoderCLI:
                 self._t("table.cost"),
             ],
             table_rows,
+        )
+
+    def _render_sessions(self, sessions: list[dict[str, Any]]) -> None:
+        print(self.style.info(self._t("msg.sessions_header", count=len(sessions))))
+        if not sessions:
+            print(self.style.dim(self._t("msg.table_empty")))
+            return
+        rows: list[list[str]] = []
+        for idx, item in enumerate(sessions, start=1):
+            sid = str(item.get("id", ""))
+            rows.append(
+                [
+                    str(idx),
+                    self._shorten(sid, 12),
+                    self._shorten(str(item.get("title", "") or "-"), 32),
+                    str(item.get("mode", "-")),
+                    str(item.get("active_model", "-")),
+                    self._format_timestamp(item.get("updated_at")),
+                ]
+            )
+        self._print_table(
+            [
+                self._t("table.no"),
+                self._t("table.id"),
+                self._t("table.title"),
+                self._t("table.mode"),
+                self._t("table.model"),
+                self._t("table.updated"),
+            ],
+            rows,
+        )
+
+    def _apply_session_snapshot(self, data: dict[str, Any]) -> None:
+        self.state.session_id = data.get("id")
+        self.state.session_title = str(data.get("title", "") or "")
+        self.state.mode = str(data.get("mode", self.state.mode))
+        self.state.active_model = data.get("active_model")
+        self.state.project_id = str(data.get("project_id", self.state.project_id))
+        self.state.thinking_level = data.get("thinking_level", self.state.thinking_level)
+        self.state.thinking_budget = int(data.get("thinking_budget", self.state.thinking_budget))
+        self.state.show_think_details = bool(data.get("show_think_details", self.state.show_think_details))
+        self.state.allow_model_command_create = bool(
+            data.get("allow_model_command_create", self.state.allow_model_command_create)
+        )
+        self.state.encourage_model_command_create = bool(
+            data.get("encourage_model_command_create", self.state.encourage_model_command_create)
         )
 
     def _render_task_list(self, tasks: list[dict[str, Any]]) -> None:
@@ -531,6 +580,75 @@ class PoeCoderCLI:
                 print(self.style.warn(self._t("msg.login_backend_failed_direct_only")))
                 self._render_backend_error(exc)
             return False
+        if cmd == "/sessions":
+            if self.direct:
+                print(self.style.warn(self._t("msg.resume_backend_only")))
+                return False
+            limit = 20
+            if len(parts) >= 2:
+                try:
+                    limit = max(1, min(200, int(parts[1])))
+                except ValueError:
+                    print(self.style.warn(self._t("msg.invalid_number")))
+                    return False
+            resp = self.http.get(
+                f"{self.state.backend_url}/sessions",
+                params={"limit": str(limit), "project_id": self.state.project_id},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list):
+                self._render_sessions(data)
+            else:
+                self._render_sessions([])
+            return False
+        if cmd == "/resume" and len(parts) == 2:
+            if self.direct:
+                print(self.style.warn(self._t("msg.resume_backend_only")))
+                return False
+            target = parts[1].strip()
+            session_data: dict[str, Any] | None = None
+            if target.isdigit():
+                idx = int(target)
+                if idx <= 0:
+                    print(self.style.warn(self._t("msg.invalid_number")))
+                    return False
+                limit = max(20, idx)
+                resp = self.http.get(
+                    f"{self.state.backend_url}/sessions",
+                    params={"limit": str(limit), "project_id": self.state.project_id},
+                )
+                resp.raise_for_status()
+                rows = resp.json()
+                if isinstance(rows, list) and idx <= len(rows):
+                    picked = rows[idx - 1]
+                    if isinstance(picked, dict):
+                        session_data = picked
+            else:
+                try:
+                    resp = self.http.get(f"{self.state.backend_url}/sessions/{target}")
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    if isinstance(payload, dict):
+                        session_data = payload
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        raise
+            if session_data is None:
+                print(self.style.warn(self._t("msg.resume_not_found", value=target)))
+                return False
+            self._apply_session_snapshot(session_data)
+            title = self.state.session_title or "-"
+            print(
+                self.style.ok(
+                    self._t(
+                        "msg.session_resumed",
+                        session_id=self.state.session_id,
+                        title=title,
+                    )
+                )
+            )
+            return False
         if cmd == "/lang" and len(parts) == 2:
             requested = parts[1]
             if not is_supported_lang(requested):
@@ -583,6 +701,26 @@ class PoeCoderCLI:
             )
             resp.raise_for_status()
             print(self.style.ok(self._t("msg.thinking_updated", level=level, budget=budget)))
+            return False
+        if cmd == "/thinkdetails" and len(parts) == 2:
+            value = parts[1].lower()
+            if value in {"on", "true", "1"}:
+                enabled = True
+            elif value in {"off", "false", "0"}:
+                enabled = False
+            else:
+                print(self.style.warn(self._t("msg.think_details_usage")))
+                return False
+            self.state.show_think_details = enabled
+            if self.direct:
+                print(self.style.ok(self._t("msg.think_details_updated", value=str(enabled).lower())))
+                return False
+            resp = self.http.post(
+                f"{self.state.backend_url}/sessions/{self.state.session_id}/think-details",
+                json={"show_think_details": enabled},
+            )
+            resp.raise_for_status()
+            print(self.style.ok(self._t("msg.think_details_updated", value=str(enabled).lower())))
             return False
         if cmd == "/commandpolicy" and len(parts) >= 2:
             flag = parts[1].lower()
@@ -992,22 +1130,14 @@ class PoeCoderCLI:
                 "policy_profile": "research",
                 "thinking_level": self.state.thinking_level,
                 "thinking_budget": self.state.thinking_budget,
+                "show_think_details": self.state.show_think_details,
                 "allow_model_command_create": self.state.allow_model_command_create,
                 "encourage_model_command_create": self.state.encourage_model_command_create,
             },
         )
         resp.raise_for_status()
         data = resp.json()
-        self.state.session_id = data["id"]
-        self.state.active_model = data.get("active_model")
-        self.state.thinking_level = data.get("thinking_level", self.state.thinking_level)
-        self.state.thinking_budget = int(data.get("thinking_budget", self.state.thinking_budget))
-        self.state.allow_model_command_create = bool(
-            data.get("allow_model_command_create", self.state.allow_model_command_create)
-        )
-        self.state.encourage_model_command_create = bool(
-            data.get("encourage_model_command_create", self.state.encourage_model_command_create)
-        )
+        self._apply_session_snapshot(data if isinstance(data, dict) else {})
         print(self.style.dim(self._t("msg.session_id", session_id=self.state.session_id)))
 
     async def _run_backend_turn(self, prompt: str, images: list[str] | None = None) -> None:
@@ -1019,7 +1149,7 @@ class PoeCoderCLI:
             "thinking_level": self.state.thinking_level,
             "thinking_budget": self.state.thinking_budget,
             "context_keys": [],
-            "metadata": {},
+            "metadata": {"show_think_details": self.state.show_think_details},
         }
         async with httpx.AsyncClient(timeout=90.0) as async_http:
             saw_delta = False

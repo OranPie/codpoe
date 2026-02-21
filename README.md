@@ -30,9 +30,11 @@ PoeCoder is a Python coding assistant runtime with:
 - `/changemodel <name|auto>` to switch main model during a session.
 - `/login [api_key]` to set/update Poe API key (prompts securely when omitted).
 - `/loginopenai [api_key]` to set/update OpenAI API key.
+- `/sessions [limit]` and `/resume <session_id|index>` to list and resume backend sessions.
 - OpenAI models should be selected with `openai/<model>` prefix (avoids name collisions with Poe model names).
 - `/plan` to switch to planning mode with planning-focused system message.
 - `/thinking <quick|balanced|deep> [budget]` to control model reasoning depth/token budget hints.
+- `/thinkdetails <on|off>` to control whether model progress/thinking detail text is encouraged in outputs.
 - `/commandpolicy <allow|deny> [encourage|noencourage]` to control model self-command creation autonomy.
 - `/image <path|url>`, `/images`, `/clearimages` for image attachments on the next request.
 - `/review <prompt>` to run reviewer-role analysis (also exposed as tool `Review`).
@@ -45,6 +47,7 @@ PoeCoder is a Python coding assistant runtime with:
   - `POECODER_POE_API_URL` (default `https://api.poe.com/bot/`)
   - `POECODER_OPENAI_API_URL` (default `https://api.openai.com/v1`)
   - `POECODER_OPENAI_MODELS` accepts comma-separated OpenAI model names and auto-normalizes to `openai/<model>`.
+  - `POECODER_SHOW_THINK_DETAILS` (`true`/`false`) sets default think-details output mode for new CLI sessions.
   - Runtime update endpoints: `POST /providers/poe/base-url`, `POST /providers/openai/base-url`.
 
 - Base main/subagent system prompts live in `poecoder/prompts.py`.
@@ -60,5 +63,6 @@ PoeCoder is a Python coding assistant runtime with:
 - Leader mode enforces scoped parallel jobs with explicit ownership and non-interference guidance per subtask.
 - `GET /tools/catalog` exposes the command/tool reference so the model can follow exact command names and args.
 - Context selection is relevance-ranked + compacted by default to reduce token waste while keeping important session context.
+- Session titles are auto-derived from model conclusions after successful turns, then shown in session listings for quick resume.
 - Turn streaming now uses model chunk streaming for lower latency (`delta` events are emitted as chunks arrive).
 - GitHub Actions: CI runs tests on pushes/PRs to `main`; release workflow builds/tests and publishes GitHub Releases on `v*` tags.

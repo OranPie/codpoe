@@ -17,6 +17,7 @@ class SessionCreateRequest(BaseModel):
     active_model: str | None = "auto"
     thinking_level: Literal["quick", "balanced", "deep"] = "balanced"
     thinking_budget: int = Field(default=12000, ge=100, le=500000)
+    show_think_details: bool = False
     allow_model_command_create: bool = True
     encourage_model_command_create: bool = True
     policy_profile: str = "default"
@@ -25,10 +26,12 @@ class SessionCreateRequest(BaseModel):
 
 class SessionResponse(BaseModel):
     id: str
+    title: str = ""
     mode: Mode
     active_model: str
     thinking_level: Literal["quick", "balanced", "deep"] = "balanced"
     thinking_budget: int = 12000
+    show_think_details: bool = False
     allow_model_command_create: bool = True
     encourage_model_command_create: bool = True
     policy_profile: str
@@ -59,6 +62,10 @@ class ProviderBaseUrlRequest(BaseModel):
 class SessionThinkingRequest(BaseModel):
     thinking_level: Literal["quick", "balanced", "deep"]
     thinking_budget: int = Field(ge=100, le=500000)
+
+
+class SessionThinkDetailsRequest(BaseModel):
+    show_think_details: bool
 
 
 class SessionCommandPolicyRequest(BaseModel):

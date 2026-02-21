@@ -56,6 +56,39 @@ def test_session_turn_and_memory(monkeypatch, tmp_path):
     assert rows[0]["content"] == "remember this"
 
 
+def test_session_title_and_list_sessions(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        return ModelReply(text="Implemented resume flow and session listing.", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    created = client.post("/sessions", json={"mode": "coding", "project_id": "demo"})
+    assert created.status_code == 200
+    session_id = created.json()["id"]
+
+    turn = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "do work"})
+    assert turn.status_code == 200
+
+    session = client.get(f"/sessions/{session_id}")
+    assert session.status_code == 200
+    assert session.json()["title"].startswith("Implemented resume flow")
+
+    listed = client.get("/sessions", params={"project_id": "demo", "limit": "10"})
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert isinstance(rows, list)
+    assert any(item["id"] == session_id for item in rows)
+
+
 def test_tool_read_raw_endpoint(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -799,6 +832,25 @@ def test_session_thinking_update(monkeypatch, tmp_path):
     payload = updated.json()
     assert payload["thinking_level"] == "deep"
     assert payload["thinking_budget"] == 24000
+
+
+def test_session_think_details_update(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+
+    updated = client.post(
+        f"/sessions/{session_id}/think-details",
+        json={"show_think_details": True},
+    )
+    assert updated.status_code == 200
+    payload = updated.json()
+    assert payload["show_think_details"] is True
 
 
 def test_session_command_policy_update(monkeypatch, tmp_path):

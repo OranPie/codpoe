@@ -172,3 +172,79 @@ def test_cli_prints_per_message_cost(monkeypatch, capsys) -> None:
     cli.start()
     out = capsys.readouterr().out
     assert "message cost=4 points (balance 1000->996)" in out
+
+
+def test_cli_resume_by_index_updates_session_state(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    cli.state.project_id = "demo"
+
+    class Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return self._payload
+
+    monkeypatch.setattr(
+        cli.http,
+        "get",
+        lambda *args, **kwargs: Resp(
+            [
+                {
+                    "id": "sess-1",
+                    "title": "Resume target",
+                    "mode": "coding",
+                    "active_model": "gpt-5.2-codex",
+                    "thinking_level": "balanced",
+                    "thinking_budget": 12000,
+                    "allow_model_command_create": True,
+                    "encourage_model_command_create": True,
+                    "project_id": "demo",
+                }
+            ]
+        ),
+    )
+
+    handled = cli._handle_command("/resume 1")
+    assert handled is False
+    assert cli.state.session_id == "sess-1"
+    assert cli.state.session_title == "Resume target"
+    assert cli.state.active_model == "gpt-5.2-codex"
+
+
+def test_cli_thinkdetails_updates_backend_state(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    cli.state.session_id = "s1"
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"id": "s1", "show_think_details": True}
+
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, json: dict):
+        captured["url"] = url
+        captured["json"] = json
+        return Resp()
+
+    monkeypatch.setattr(cli.http, "post", fake_post)
+    handled = cli._handle_command("/thinkdetails on")
+    assert handled is False
+    assert cli.state.show_think_details is True
+    assert str(captured["url"]).endswith("/sessions/s1/think-details")

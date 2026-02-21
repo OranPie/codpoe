@@ -17,6 +17,7 @@ class Settings:
     default_large_model: str
     default_thinking_level: str
     default_thinking_budget: int
+    default_show_think_details: bool
     reviewer_model: str
     reviewer_thinking_level: str
     reviewer_thinking_budget: int
@@ -54,6 +55,17 @@ def _normalize_openai_models(raw: str) -> list[str]:
     return out
 
 
+def _parse_bool(raw: str | None, default: bool) -> bool:
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def get_settings() -> Settings:
     home = Path(os.environ.get("POECODER_HOME", Path.home() / ".poecoder"))
     home.mkdir(parents=True, exist_ok=True)
@@ -62,6 +74,7 @@ def get_settings() -> Settings:
     default_large = os.environ.get("POECODER_LARGE_MODEL", "gpt-5.2")
     default_thinking_level = os.environ.get("POECODER_THINKING_LEVEL", "balanced")
     default_thinking_budget = int(os.environ.get("POECODER_THINKING_BUDGET", "12000"))
+    default_show_think_details = _parse_bool(os.environ.get("POECODER_SHOW_THINK_DETAILS"), False)
     reviewer_model = os.environ.get("POECODER_REVIEWER_MODEL", default_large)
     reviewer_thinking_level = os.environ.get("POECODER_REVIEWER_THINKING_LEVEL", "deep")
     reviewer_thinking_budget = int(os.environ.get("POECODER_REVIEWER_THINKING_BUDGET", "16000"))
@@ -81,6 +94,7 @@ def get_settings() -> Settings:
         default_large_model=default_large,
         default_thinking_level=default_thinking_level,
         default_thinking_budget=default_thinking_budget,
+        default_show_think_details=default_show_think_details,
         reviewer_model=reviewer_model,
         reviewer_thinking_level=reviewer_thinking_level,
         reviewer_thinking_budget=reviewer_thinking_budget,
