@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -178,6 +179,7 @@ class Database:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
         self._conn.executescript(SCHEMA_SQL)
@@ -222,25 +224,31 @@ class Database:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
+        self._lock.acquire()
         try:
             yield self._conn
             self._conn.commit()
         except Exception:
             self._conn.rollback()
             raise
+        finally:
+            self._lock.release()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
-        cur = self._conn.execute(sql, params)
-        self._conn.commit()
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
         return cur
 
     def query_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
-        cur = self._conn.execute(sql, params)
-        return list(cur.fetchall())
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            return list(cur.fetchall())
 
     def query_one(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
-        cur = self._conn.execute(sql, params)
-        return cur.fetchone()
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            return cur.fetchone()
 
 
 

@@ -164,9 +164,9 @@ class LeaderService:
                 await asyncio.gather(*workers)
 
             jobs = self.list_jobs(run_id)
-            failed_jobs = [job for job in jobs if job.state != "completed"]
+            incomplete_jobs = [job for job in jobs if job.state != "completed"]
             verify_result: dict[str, Any] | None = None
-            if req.verify_command and not failed_jobs:
+            if req.verify_command and not incomplete_jobs:
                 verify_result = (
                     await self.shell.run(
                         session_id=req.session_id,
@@ -179,9 +179,17 @@ class LeaderService:
 
             final_state = "completed"
             final_error: str | None = None
-            if failed_jobs:
-                final_state = "failed"
-                final_error = f"{len(failed_jobs)} leader jobs failed"
+            if incomplete_jobs:
+                states = {job.state for job in incomplete_jobs}
+                if "failed" in states:
+                    final_state = "failed"
+                    final_error = f"{len([j for j in incomplete_jobs if j.state == 'failed'])} leader jobs failed"
+                elif "cancelled" in states:
+                    final_state = "cancelled"
+                    final_error = "cancelled"
+                else:
+                    final_state = "failed"
+                    final_error = f"{len(incomplete_jobs)} leader jobs incomplete"
             if verify_result and (
                 not verify_result.get("allowed", False)
                 or int(verify_result.get("exit_code", 1)) != 0
