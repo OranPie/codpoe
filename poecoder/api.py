@@ -110,7 +110,26 @@ def auth_openai_login(req: ApiLoginRequest) -> dict[str, Any]:
     state.subagents.model_client.update_openai(api_key=api_key)
     state.reviews.model_client.update_openai(api_key=api_key)
     state.model_catalog.update_openai(api_key=api_key)
-    return {"ok": True, "message": "openai api key updated"}
+    state.model_catalog.list_models(refresh=True)
+    status = state.model_catalog.provider_status().get("openai", {})
+    return {"ok": True, "message": "openai api key updated", "openai": status}
+
+
+@app.get("/auth/status")
+def auth_status() -> dict[str, Any]:
+    state = get_state()
+    state.model_catalog.api_key = state.settings.poe_api_key
+    state.model_catalog.update_openai(
+        api_key=state.settings.openai_api_key,
+        base_url=state.settings.openai_api_url,
+    )
+    return {
+        "poe_api_key_set": bool(state.settings.poe_api_key),
+        "openai_api_key_set": bool(state.settings.openai_api_key),
+        "poe_api_url": state.settings.poe_api_url,
+        "openai_api_url": state.settings.openai_api_url,
+        "catalog": state.model_catalog.provider_status(),
+    }
 
 
 @app.post("/auth/secrets/save")
@@ -230,7 +249,8 @@ def put_context(session_id: str, req: ContextPutRequest) -> dict[str, Any]:
 @app.get("/models")
 def list_models(refresh: bool = False) -> dict[str, Any]:
     state = get_state()
-    return {"models": state.model_catalog.list_models(refresh=refresh)}
+    models = state.model_catalog.list_models(refresh=refresh)
+    return {"models": models, "status": state.model_catalog.provider_status()}
 
 
 @app.get("/models/table")
@@ -522,6 +542,7 @@ def wiki_compact(req: WikiCompactRequest) -> dict[str, Any]:
 def usage_current_balance() -> dict[str, Any]:
     state = get_state()
     payload: dict[str, Any] = {}
+    catalog_status = state.model_catalog.provider_status()
     try:
         poe_balance = state.usage.get_current_balance()
         payload.update(poe_balance)
@@ -535,6 +556,11 @@ def usage_current_balance() -> dict[str, Any]:
         "base_url": state.settings.openai_api_url,
         "model_count": len(openai_models),
         "models_preview": openai_models[:10],
+        "last_error": (
+            catalog_status.get("openai", {}).get("last_error")
+            if isinstance(catalog_status.get("openai"), dict)
+            else None
+        ),
     }
     return payload
 

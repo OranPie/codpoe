@@ -64,3 +64,16 @@ def test_model_catalog_openai_update_changes_base_url() -> None:
     catalog.update_openai(api_key="oa-key", base_url="https://proxy.openai.local/v1/")
     assert catalog.openai_api_key == "oa-key"
     assert catalog.openai_api_url == "https://proxy.openai.local/v1"
+
+
+def test_model_catalog_provider_status_has_key_info() -> None:
+    catalog = ModelCatalog(
+        supported_models=["assistant", "openai/gpt-5"],
+        api_key="poe-key",
+        openai_api_key="oa-key",
+        openai_api_url="https://api.openai.com/v1",
+    )
+    status = catalog.provider_status()
+    assert status["poe"]["api_key_configured"] is True
+    assert status["openai"]["api_key_configured"] is True
+    assert status["openai"]["model_count"] == 1

@@ -217,6 +217,25 @@ def test_openai_login_and_base_url_update(monkeypatch, tmp_path):
     assert api.STATE.model_catalog.openai_api_url == "https://proxy.openai.local/v1"
 
 
+def test_auth_status_reports_key_flags(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    monkeypatch.setenv("POECODER_POE_API_KEY", "poe-key")
+    monkeypatch.setenv("POECODER_OPENAI_API_KEY", "oa-key")
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+    resp = client.get("/auth/status")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["poe_api_key_set"] is True
+    assert payload["openai_api_key_set"] is True
+    assert "catalog" in payload
+    assert payload["catalog"]["openai"]["api_key_configured"] is True
+
+
 def test_tool_set_base_uri(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))

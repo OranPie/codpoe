@@ -15,6 +15,7 @@ def test_translator_zhcn_strings() -> None:
     assert "命令" in tr.t("cli.help")
     assert "/leader" in tr.t("cli.help")
     assert "/login" in tr.t("cli.help")
+    assert "/secretssave" in tr.t("cli.help")
     assert "/resume" in tr.t("cli.help")
     assert "/thinkdetails" in tr.t("cli.help")
     assert tr.t("msg.current_balance", points=12) == "当前余额：12 点"

@@ -12,12 +12,15 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "cli.prompt": "poecoder> ",
         "cli.api_key_prompt": "Poe API key: ",
         "cli.api_key_prompt_openai": "OpenAI API key: ",
+        "cli.user_key_prompt": "User encryption key: ",
         "cli.help": """
 Commands:
   /help                               Show this help
   /quit                               Exit CLI
   /login [api_key]                    Set/update Poe API key (prompt if omitted)
   /loginopenai [api_key]              Set/update OpenAI API key (prompt if omitted)
+  /secretssave [user_key]             Save encrypted provider credentials
+  /secretsload [user_key]             Load encrypted provider credentials
   /setbaseuri <poe|openai> <url>      Set provider base URI
   /sessions [limit]                   List resumable backend sessions
   /resume <session_id|index>          Resume an existing backend session
@@ -32,6 +35,7 @@ Commands:
   /images                             Show pending images
   /clearimages                        Clear pending images
   /listmodels                         List supported models
+  /apistatus                          Show provider API/key/base-url status
   /modeltable                         Show model strategy table
   /changemodel <name|auto>            Change active main model
   /balance                            Fetch current Poe point balance
@@ -59,6 +63,9 @@ Commands:
         "msg.login_direct_updated": "Direct Poe API key updated.",
         "msg.login_backend_updated": "Backend Poe API key updated.",
         "msg.login_openai_backend_updated": "Backend OpenAI API key updated.",
+        "msg.secrets_backend_only": "Secrets save/load requires backend mode.",
+        "msg.secrets_saved": "Encrypted secrets saved: {path}",
+        "msg.secrets_loaded": "Encrypted secrets loaded (poe_key_set={poe_set}, openai_key_set={openai_set}).",
         "msg.base_uri_usage": "Usage: /setbaseuri <poe|openai> <url>",
         "msg.base_uri_updated": "Base URI updated: provider={provider} url={url}",
         "msg.login_backend_failed_direct_only": "Backend unavailable; saved key for direct mode only.",
@@ -126,6 +133,7 @@ Commands:
         "msg.leader_run_header": "leader run {id}",
         "msg.leader_jobs_header": "leader jobs ({count})",
         "msg.models_empty": "No models available.",
+        "msg.openai_models_refresh_failed": "OpenAI model refresh failed: {error}",
         "msg.current_model": "current={model}",
         "msg.table_empty": "(empty)",
         "msg.shell_backend_only": "Shell API requires backend mode.",
@@ -175,12 +183,15 @@ Commands:
         "cli.prompt": "poecoder> ",
         "cli.api_key_prompt": "Poe API Key：",
         "cli.api_key_prompt_openai": "OpenAI API Key：",
+        "cli.user_key_prompt": "用户加密密钥：",
         "cli.help": """
 命令：
   /help                               显示帮助
   /quit                               退出 CLI
   /login [api_key]                    设置/更新 Poe API Key（省略则提示输入）
   /loginopenai [api_key]              设置/更新 OpenAI API Key（省略则提示输入）
+  /secretssave [user_key]             保存加密后的提供方凭据
+  /secretsload [user_key]             载入加密后的提供方凭据
   /setbaseuri <poe|openai> <url>      设置提供方基础 URI
   /sessions [limit]                   列出可恢复的后端会话
   /resume <session_id|index>          恢复已有后端会话
@@ -195,6 +206,7 @@ Commands:
   /images                             查看待发送图片
   /clearimages                        清空待发送图片
   /listmodels                         列出可用模型
+  /apistatus                          查看提供方 API/Key/BaseURL 状态
   /modeltable                         查看模型策略表
   /changemodel <name|auto>            切换主模型
   /balance                            查询 Poe 当前点数余额
@@ -222,6 +234,9 @@ Commands:
         "msg.login_direct_updated": "直连 Poe API Key 已更新。",
         "msg.login_backend_updated": "后端 Poe API Key 已更新。",
         "msg.login_openai_backend_updated": "后端 OpenAI API Key 已更新。",
+        "msg.secrets_backend_only": "凭据保存/加载仅支持后端模式。",
+        "msg.secrets_saved": "加密凭据已保存：{path}",
+        "msg.secrets_loaded": "加密凭据已加载（poe_key_set={poe_set}, openai_key_set={openai_set}）。",
         "msg.base_uri_usage": "用法：/setbaseuri <poe|openai> <url>",
         "msg.base_uri_updated": "基础 URI 已更新：provider={provider} url={url}",
         "msg.login_backend_failed_direct_only": "后端不可用；仅已保存到直连模式。",
@@ -289,6 +304,7 @@ Commands:
         "msg.leader_run_header": "Leader 任务 {id}",
         "msg.leader_jobs_header": "Leader 子任务（{count}）",
         "msg.models_empty": "没有可用模型。",
+        "msg.openai_models_refresh_failed": "OpenAI 模型刷新失败：{error}",
         "msg.current_model": "当前模型={model}",
         "msg.table_empty": "（空）",
         "msg.shell_backend_only": "Shell 功能仅支持后端模式。",

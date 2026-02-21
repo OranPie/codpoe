@@ -16,11 +16,32 @@ class ModelCatalog:
     cache_ttl_s: int = 300
     _last_fetch_poe_at: float = field(default=0.0, init=False)
     _last_fetch_openai_at: float = field(default=0.0, init=False)
+    _last_poe_error: str | None = field(default=None, init=False)
+    _last_openai_error: str | None = field(default=None, init=False)
 
     def list_models(self, refresh: bool = False) -> list[str]:
         self._refresh_from_remote(force=refresh)
         self._refresh_openai_from_remote(force=refresh)
         return list(self.supported_models)
+
+    def provider_status(self) -> dict[str, object]:
+        openai_models = [name for name in self.supported_models if isinstance(name, str) and name.startswith("openai/")]
+        return {
+            "poe": {
+                "api_key_configured": bool(self.api_key),
+                "models_url": self.models_url,
+                "last_fetch_at": self._last_fetch_poe_at,
+                "last_error": self._last_poe_error,
+            },
+            "openai": {
+                "api_key_configured": bool(self.openai_api_key),
+                "base_url": self.openai_api_url,
+                "last_fetch_at": self._last_fetch_openai_at,
+                "last_error": self._last_openai_error,
+                "model_count": len(openai_models),
+                "models_preview": openai_models[:10],
+            },
+        }
 
     def ensure_supported(self, model: str) -> None:
         if model == "auto":
@@ -56,17 +77,26 @@ class ModelCatalog:
                     if item and item not in merged:
                         merged.append(item)
                 self.supported_models = merged
-                self._last_fetch_poe_at = now
-        except Exception:
+            self._last_fetch_poe_at = now
+            self._last_poe_error = None
+        except Exception as exc:
             # Keep local fallback model list if remote fetch fails.
             self._last_fetch_poe_at = now
+            self._last_poe_error = str(exc)[:240] or "failed to fetch Poe models"
 
     def update_openai(self, api_key: str | None = None, base_url: str | None = None) -> None:
+        changed = False
         if api_key is not None:
+            if api_key != self.openai_api_key:
+                changed = True
             self.openai_api_key = api_key
         if base_url is not None:
-            self.openai_api_url = self._normalize_openai_api_url(base_url)
-        self._last_fetch_openai_at = 0.0
+            normalized = self._normalize_openai_api_url(base_url)
+            if normalized != self.openai_api_url:
+                changed = True
+            self.openai_api_url = normalized
+        if changed:
+            self._last_fetch_openai_at = 0.0
 
     def _refresh_openai_from_remote(self, force: bool = False) -> None:
         if not self.openai_api_key:
@@ -101,8 +131,10 @@ class ModelCatalog:
                         merged.append(item)
                 self.supported_models = merged
             self._last_fetch_openai_at = now
-        except Exception:
+            self._last_openai_error = None
+        except Exception as exc:
             self._last_fetch_openai_at = now
+            self._last_openai_error = str(exc)[:240] or "failed to fetch OpenAI models"
 
     @staticmethod
     def _normalize_openai_api_url(api_url: str) -> str:

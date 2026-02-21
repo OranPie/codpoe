@@ -88,6 +88,68 @@ def test_cli_loginopenai_uses_openai_prompt(monkeypatch) -> None:
     assert cli.direct_model_client.openai_api_key == "oa-demo-key"
 
 
+def test_cli_secretssave_calls_backend(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    captured: dict[str, object] = {}
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"ok": True, "path": "/tmp/provider_secrets.enc.json"}
+
+    monkeypatch.setattr(cli, "_prompt_user_key", lambda: "user-pass")
+
+    def fake_post(url: str, json: dict):
+        captured["url"] = url
+        captured["json"] = json
+        return Resp()
+
+    monkeypatch.setattr(cli.http, "post", fake_post)
+    handled = cli._handle_command("/secretssave")
+    assert handled is False
+    assert str(captured["url"]).endswith("/auth/secrets/save")
+    assert captured["json"] == {"user_key": "user-pass"}
+
+
+def test_cli_secretsload_updates_base_urls(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "ok": True,
+                "poe_api_key_set": True,
+                "openai_api_key_set": True,
+                "poe_api_url": "https://api.poe.com/bot/",
+                "openai_api_url": "https://openai.proxy/v1",
+            }
+
+    monkeypatch.setattr(cli, "_prompt_user_key", lambda: "user-pass")
+    monkeypatch.setattr(cli.http, "post", lambda *_args, **_kwargs: Resp())
+
+    handled = cli._handle_command("/secretsload")
+    assert handled is False
+    assert cli.settings.poe_api_url == "https://api.poe.com/bot/"
+    assert cli.settings.openai_api_url == "https://openai.proxy/v1"
+    assert cli.direct_model_client.api_url == "https://api.poe.com/bot/"
+    assert cli.direct_model_client.openai_api_url == "https://openai.proxy/v1"
+
+
 def test_cli_runtime_event_loop_closed_is_handled(monkeypatch) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",
@@ -219,6 +281,33 @@ def test_cli_balance_prints_openai_details(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "Current balance: 12 points" in out
     assert "OpenAI: key_set=true" in out
+
+
+def test_cli_apistatus_backend(monkeypatch, capsys) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "poe_api_key_set": True,
+                "openai_api_key_set": False,
+                "poe_api_url": "https://api.poe.com/bot/",
+                "openai_api_url": "https://api.openai.com/v1",
+            }
+
+    monkeypatch.setattr(cli.http, "get", lambda *_args, **_kwargs: Resp())
+    handled = cli._handle_command("/apistatus")
+    assert handled is False
+    out = capsys.readouterr().out
+    assert "\"poe_api_key_set\": true" in out
 
 
 def test_cli_resume_by_index_updates_session_state(monkeypatch) -> None:

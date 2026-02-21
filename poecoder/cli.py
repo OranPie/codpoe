@@ -18,6 +18,7 @@ import httpx
 from poecoder.config import get_settings
 from poecoder.i18n import Translator, is_supported_lang, normalize_lang, supported_langs
 from poecoder.prompts import PLAN_SYSTEM_MESSAGE
+from poecoder.services.model_catalog import ModelCatalog
 from poecoder.services.model_clients import PoeModelClient
 
 
@@ -370,6 +371,12 @@ class PoeCoderCLI:
         except (EOFError, KeyboardInterrupt):
             return ""
 
+    def _prompt_user_key(self) -> str:
+        try:
+            return getpass(self._t("cli.user_key_prompt")).strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
     @staticmethod
     def _configure_line_editing() -> None:
         try:
@@ -593,6 +600,56 @@ class PoeCoderCLI:
             except httpx.HTTPError as exc:
                 print(self.style.warn(self._t("msg.login_backend_failed_direct_only")))
                 self._render_backend_error(exc)
+            return False
+        if cmd == "/secretssave":
+            if self.direct:
+                print(self.style.warn(self._t("msg.secrets_backend_only")))
+                return False
+            user_key = parts[1].strip() if len(parts) >= 2 else self._prompt_user_key()
+            if not user_key:
+                print(self.style.warn(self._t("msg.login_cancelled")))
+                return False
+            resp = self.http.post(
+                f"{self.state.backend_url}/auth/secrets/save",
+                json={"user_key": user_key},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                payload = {}
+            print(self.style.ok(self._t("msg.secrets_saved", path=str(payload.get("path", "")))))
+            return False
+        if cmd == "/secretsload":
+            if self.direct:
+                print(self.style.warn(self._t("msg.secrets_backend_only")))
+                return False
+            user_key = parts[1].strip() if len(parts) >= 2 else self._prompt_user_key()
+            if not user_key:
+                print(self.style.warn(self._t("msg.login_cancelled")))
+                return False
+            resp = self.http.post(
+                f"{self.state.backend_url}/auth/secrets/load",
+                json={"user_key": user_key},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                payload = {}
+            poe_url = str(payload.get("poe_api_url", self.settings.poe_api_url))
+            openai_url = str(payload.get("openai_api_url", self.settings.openai_api_url))
+            self.settings.poe_api_url = poe_url
+            self.settings.openai_api_url = openai_url
+            self.direct_model_client.update_poe(base_url=poe_url)
+            self.direct_model_client.update_openai(base_url=openai_url)
+            print(
+                self.style.ok(
+                    self._t(
+                        "msg.secrets_loaded",
+                        poe_set=str(bool(payload.get("poe_api_key_set"))).lower(),
+                        openai_set=str(bool(payload.get("openai_api_key_set"))).lower(),
+                    )
+                )
+            )
             return False
         if cmd in {"/setbaseuri", "/setbaseurl", "/baseuri"}:
             if len(parts) < 3:
@@ -839,12 +896,38 @@ class PoeCoderCLI:
             return False
         if cmd in {"/listmodels", "/models"}:
             if self.direct:
-                self._render_models(self.settings.supported_models)
+                catalog = ModelCatalog(
+                    supported_models=list(self.settings.supported_models),
+                    api_key=self.settings.poe_api_key,
+                    openai_api_key=self.settings.openai_api_key,
+                    openai_api_url=self.settings.openai_api_url,
+                )
+                models = catalog.list_models(refresh=True)
+                self._render_models(models)
                 return False
             resp = self.http.get(f"{self.state.backend_url}/models", params={"refresh": "true"})
             resp.raise_for_status()
             data = resp.json()
             self._render_models(data.get("models", []))
+            status = data.get("status", {})
+            if isinstance(status, dict):
+                openai_status = status.get("openai", {})
+                if isinstance(openai_status, dict) and openai_status.get("last_error"):
+                    print(self.style.warn(self._t("msg.openai_models_refresh_failed", error=str(openai_status["last_error"]))))
+            return False
+        if cmd == "/apistatus":
+            if self.direct:
+                payload = {
+                    "poe_api_key_set": bool(self.settings.poe_api_key),
+                    "openai_api_key_set": bool(self.settings.openai_api_key),
+                    "poe_api_url": self.settings.poe_api_url,
+                    "openai_api_url": self.settings.openai_api_url,
+                }
+                print(self._json_text(payload, indent=2))
+                return False
+            resp = self.http.get(f"{self.state.backend_url}/auth/status")
+            resp.raise_for_status()
+            print(self._json_text(resp.json(), indent=2))
             return False
         if cmd == "/modeltable":
             if self.direct:
