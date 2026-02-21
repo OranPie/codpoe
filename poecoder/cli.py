@@ -141,9 +141,12 @@ class PoeCoderCLI:
             print("| " + " | ".join(row[idx].ljust(widths[idx]) for idx in range(len(headers))) + " |")
         print(sep)
 
-    def _render_models(self, models: list[str]) -> None:
+    def _render_models(self, models: list[str], query: str = "", total_count: int | None = None) -> None:
         current = self.model if self.direct else (self.state.active_model or "auto")
         print(self.style.info(self._t("msg.models_header", count=len(models))))
+        if query:
+            base = total_count if isinstance(total_count, int) and total_count >= 0 else len(models)
+            print(self.style.dim(self._t("msg.models_filter_applied", query=query, count=len(models), total=base)))
         if not models:
             print(self.style.dim(self._t("msg.models_empty")))
             return
@@ -1065,6 +1068,8 @@ class PoeCoderCLI:
             print(self.style.ok(self._t("msg.images_cleared")))
             return False
         if cmd in {"/listmodels", "/models"}:
+            query = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            query_l = query.lower()
             if self.direct:
                 catalog = ModelCatalog(
                     supported_models=list(self.settings.supported_models),
@@ -1072,13 +1077,18 @@ class PoeCoderCLI:
                     openai_api_key=self.settings.openai_api_key,
                     openai_api_url=self.settings.openai_api_url,
                 )
-                models = catalog.list_models(refresh=True)
-                self._render_models(models)
+                all_models = catalog.list_models(refresh=True)
+                models = [name for name in all_models if query_l in name.lower()] if query_l else all_models
+                self._render_models(models, query=query, total_count=len(all_models))
                 return False
             resp = self.http.get(f"{self.state.backend_url}/models", params={"refresh": "true"})
             resp.raise_for_status()
             data = resp.json()
-            self._render_models(data.get("models", []))
+            all_models = data.get("models", [])
+            if not isinstance(all_models, list):
+                all_models = []
+            models = [name for name in all_models if isinstance(name, str) and query_l in name.lower()] if query_l else all_models
+            self._render_models(models, query=query, total_count=len(all_models))
             status = data.get("status", {})
             if isinstance(status, dict):
                 openai_status = status.get("openai", {})

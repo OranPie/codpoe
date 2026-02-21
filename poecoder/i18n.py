@@ -35,7 +35,7 @@ Commands:
   /image <path|url>                   Attach one image for next model/subagent request
   /images                             Show pending images
   /clearimages                        Clear pending images
-  /listmodels                         List supported models
+  /listmodels [query]                 List supported models (optional substring filter)
   /apistatus                          Show provider API/key/base-url status
   /modeltable                         Show model strategy table
   /changemodel <name|auto>            Change active main model
@@ -102,6 +102,7 @@ Commands:
         "msg.images_empty": "No pending images.",
         "msg.images_cleared": "Pending images cleared.",
         "msg.models_header": "models ({count})",
+        "msg.models_filter_applied": "filter='{query}' matched {count}/{total}",
         "msg.model_table_empty": "No model profiles.",
         "msg.modeltable_backend_only": "Model table requires backend mode.",
         "msg.direct_model_set": "Direct model set to {model}",
@@ -209,7 +210,7 @@ Commands:
   /image <path|url>                   为下一次模型/子代理请求添加一张图片
   /images                             查看待发送图片
   /clearimages                        清空待发送图片
-  /listmodels                         列出可用模型
+  /listmodels [query]                 列出可用模型（可选子串筛选）
   /apistatus                          查看提供方 API/Key/BaseURL 状态
   /modeltable                         查看模型策略表
   /changemodel <name|auto>            切换主模型
@@ -276,6 +277,7 @@ Commands:
         "msg.images_empty": "没有待发送图片。",
         "msg.images_cleared": "待发送图片已清空。",
         "msg.models_header": "模型列表（{count}）",
+        "msg.models_filter_applied": "筛选='{query}'，匹配 {count}/{total}",
         "msg.model_table_empty": "暂无模型画像。",
         "msg.modeltable_backend_only": "模型策略表仅支持后端模式。",
         "msg.direct_model_set": "直连模式模型已设置为 {model}",

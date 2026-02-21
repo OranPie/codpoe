@@ -6,6 +6,7 @@ import builtins
 import httpx
 
 from poecoder.cli import PoeCoderCLI, StreamEventError
+from poecoder.services.model_catalog import ModelCatalog
 
 
 def test_cli_start_falls_back_to_direct_when_backend_unreachable(monkeypatch) -> None:
@@ -86,6 +87,34 @@ def test_cli_loginopenai_uses_openai_prompt(monkeypatch) -> None:
     assert handled is False
     assert cli.settings.openai_api_key == "oa-demo-key"
     assert cli.direct_model_client.openai_api_key == "oa-demo-key"
+
+
+def test_cli_listmodels_accepts_query_filter(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=True,
+        model="assistant",
+        lang="en",
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        ModelCatalog,
+        "list_models",
+        lambda self, refresh=False: ["assistant", "openai/gpt-5", "openai/gpt-4o-mini", "gemini-3-flash"],
+    )
+
+    def fake_render(models: list[str], query: str = "", total_count: int | None = None) -> None:
+        captured["models"] = list(models)
+        captured["query"] = query
+        captured["total_count"] = total_count
+
+    monkeypatch.setattr(cli, "_render_models", fake_render)
+    handled = cli._handle_command("/listmodels gpt-5")
+    assert handled is False
+    assert captured["query"] == "gpt-5"
+    assert captured["models"] == ["openai/gpt-5"]
+    assert captured["total_count"] == 4
 
 
 def test_cli_secretssave_calls_backend(monkeypatch) -> None:

@@ -31,7 +31,7 @@ PoeCoder is a Python coding assistant runtime with:
 
 ## Notable CLI Commands
 
-- `/listmodels` to inspect supported models.
+- `/listmodels [query]` to inspect supported models with optional substring filter.
 - `/modeltable` to inspect/edit model strategy profiles used for auto model choice.
 - `/changemodel <name|auto>` to switch main model during a session.
 - `/login [api_key]` to set/update Poe API key (prompts securely when omitted).
