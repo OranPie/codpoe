@@ -397,6 +397,14 @@ class ToolRuntime:
 def parse_tool_calls(text: str) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     decoder = json.JSONDecoder()
+
+    def _append_call(name: Any, args: Any) -> None:
+        if not isinstance(name, str) or not name.strip():
+            return
+        if not isinstance(args, dict):
+            return
+        calls.append({"name": name.strip(), "args": args})
+
     marker = "@tool "
     pos = 0
     while True:
@@ -422,7 +430,32 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
         except Exception:
             pos = brace + 1
             continue
-        if isinstance(args, dict):
-            calls.append({"name": name, "args": args})
+        _append_call(name, args)
         pos = brace + consumed
+
+    # Fallback parser for non-compliant JSON-style tool calls sometimes emitted by models.
+    # Example: {"tool_name":"ListModels","args":{"refresh":false}}
+    seen = {(item["name"], json.dumps(item["args"], sort_keys=True, ensure_ascii=True)) for item in calls}
+    pos = 0
+    while True:
+        brace = text.find("{", pos)
+        if brace < 0:
+            break
+        try:
+            obj, consumed = decoder.raw_decode(text[brace:])
+        except Exception:
+            pos = brace + 1
+            continue
+        pos = brace + consumed
+        if not isinstance(obj, dict):
+            continue
+        tool_name = obj.get("tool_name")
+        tool_args = obj.get("args")
+        if not isinstance(tool_name, str) or not isinstance(tool_args, dict):
+            continue
+        key = (tool_name.strip(), json.dumps(tool_args, sort_keys=True, ensure_ascii=True))
+        if key in seen:
+            continue
+        seen.add(key)
+        calls.append({"name": tool_name.strip(), "args": tool_args})
     return calls
