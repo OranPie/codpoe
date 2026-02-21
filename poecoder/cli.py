@@ -299,10 +299,28 @@ class PoeCoderCLI:
         self.state.pending_images.clear()
         return images
 
+    def _render_backend_error(self, exc: Exception, startup: bool = False) -> None:
+        print(
+            self.style.error(
+                self._t(
+                    "msg.backend_unreachable",
+                    url=self.state.backend_url,
+                    error=str(exc),
+                )
+            )
+        )
+        print(self.style.dim(self._t("msg.backend_retry_hint")))
+        if startup and not self.direct:
+            self.direct = True
+            print(self.style.warn(self._t("msg.backend_fallback_direct", model=self.model)))
+
     def start(self) -> None:
         print(self.style.title(self._t("cli.title")), self.style.dim(self._t("cli.type_help")))
         if not self.direct:
-            self._ensure_session(self.state.mode)
+            try:
+                self._ensure_session(self.state.mode)
+            except httpx.HTTPError as exc:
+                self._render_backend_error(exc, startup=True)
         while True:
             try:
                 raw = input(self._t("cli.prompt")).strip()
@@ -312,15 +330,21 @@ class PoeCoderCLI:
             if not raw:
                 continue
             if raw.startswith("/"):
-                if self._handle_command(raw):
-                    break
+                try:
+                    if self._handle_command(raw):
+                        break
+                except httpx.HTTPError as exc:
+                    self._render_backend_error(exc)
                 continue
             if self.direct:
                 images = self._consume_pending_images()
                 asyncio.run(self._run_direct_turn(raw, images))
             else:
                 images = self._consume_pending_images()
-                asyncio.run(self._run_backend_turn(raw, images))
+                try:
+                    asyncio.run(self._run_backend_turn(raw, images))
+                except httpx.HTTPError as exc:
+                    self._render_backend_error(exc)
 
     def _handle_command(self, raw: str) -> bool:
         parts = shlex.split(raw)
@@ -340,14 +364,18 @@ class PoeCoderCLI:
                 self.direct_model_client.api_key = api_key
                 print(self.style.ok(self._t("msg.login_direct_updated")))
                 return False
-            resp = self.http.post(
-                f"{self.state.backend_url}/auth/poe/login",
-                json={"api_key": api_key},
-            )
-            resp.raise_for_status()
             self.settings.poe_api_key = api_key
             self.direct_model_client.api_key = api_key
-            print(self.style.ok(self._t("msg.login_backend_updated")))
+            try:
+                resp = self.http.post(
+                    f"{self.state.backend_url}/auth/poe/login",
+                    json={"api_key": api_key},
+                )
+                resp.raise_for_status()
+                print(self.style.ok(self._t("msg.login_backend_updated")))
+            except httpx.HTTPError as exc:
+                print(self.style.warn(self._t("msg.login_backend_failed_direct_only")))
+                self._render_backend_error(exc)
             return False
         if cmd == "/lang" and len(parts) == 2:
             requested = parts[1]
