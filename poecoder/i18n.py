@@ -16,6 +16,7 @@ Commands:
   /help                               Show this help
   /quit                               Exit CLI
   /login [api_key]                    Set/update Poe API key (prompt if omitted)
+  /loginopenai [api_key]              Set/update OpenAI API key (prompt if omitted)
   /system <text>                      Set system message
   /mode <coding|chat|planning|leader> Start new backend session in mode
   /plan                               Switch to planning mode + planning system message
@@ -52,10 +53,18 @@ Commands:
         "msg.api_key_missing_prompt": "No Poe API key configured. Enter one now (press Enter to skip).",
         "msg.login_direct_updated": "Direct Poe API key updated.",
         "msg.login_backend_updated": "Backend Poe API key updated.",
+        "msg.login_openai_backend_updated": "Backend OpenAI API key updated.",
         "msg.login_backend_failed_direct_only": "Backend unavailable; saved key for direct mode only.",
         "msg.backend_unreachable": "Backend unreachable at {url}: {error}",
+        "msg.backend_reason_prefix": "Possible reason: {reason}",
+        "msg.backend_reason_stream_drop": "stream connection dropped before response completed",
+        "msg.backend_reason_event_loop": "async event-loop lifecycle issue during request teardown",
+        "msg.backend_reason_down": "backend process is not listening or restarted",
+        "msg.backend_reason_poe_non_sse": "Poe upstream returned non-SSE response (often auth/model/quota/rate error)",
         "msg.backend_retry_hint": "Start backend with `poecoder-api`, or run CLI with `--direct`.",
         "msg.backend_fallback_direct": "Switched to direct mode automatically (model={model}).",
+        "msg.stream_retry_nonstream": "Streaming interrupted; retrying once in non-stream mode.",
+        "msg.message_cost": "message cost={cost} points (balance {before}->{after})",
         "msg.system_updated": "System message updated.",
         "msg.mode_set": "Mode set to {mode}",
         "msg.invalid_mode": "Invalid mode: {mode}",
@@ -151,6 +160,7 @@ Commands:
   /help                               显示帮助
   /quit                               退出 CLI
   /login [api_key]                    设置/更新 Poe API Key（省略则提示输入）
+  /loginopenai [api_key]              设置/更新 OpenAI API Key（省略则提示输入）
   /system <text>                      设置系统提示词
   /mode <coding|chat|planning|leader> 以指定模式创建后端会话
   /plan                               切换到规划模式并启用规划系统提示词
@@ -187,10 +197,18 @@ Commands:
         "msg.api_key_missing_prompt": "未配置 Poe API Key。现在输入（直接回车可跳过）。",
         "msg.login_direct_updated": "直连 Poe API Key 已更新。",
         "msg.login_backend_updated": "后端 Poe API Key 已更新。",
+        "msg.login_openai_backend_updated": "后端 OpenAI API Key 已更新。",
         "msg.login_backend_failed_direct_only": "后端不可用；仅已保存到直连模式。",
         "msg.backend_unreachable": "无法连接后端 {url}: {error}",
+        "msg.backend_reason_prefix": "可能原因：{reason}",
+        "msg.backend_reason_stream_drop": "流式连接在响应完成前被中断",
+        "msg.backend_reason_event_loop": "请求收尾阶段发生异步事件循环生命周期问题",
+        "msg.backend_reason_down": "后端进程未监听或发生重启",
+        "msg.backend_reason_poe_non_sse": "Poe 上游返回了非 SSE 响应（常见于鉴权/模型/额度/限流错误）",
         "msg.backend_retry_hint": "请先运行 `poecoder-api`，或用 `--direct` 启动 CLI。",
         "msg.backend_fallback_direct": "已自动切换到直连模式（model={model}）。",
+        "msg.stream_retry_nonstream": "流式输出中断；正在自动切换为非流式重试一次。",
+        "msg.message_cost": "单条消息成本={cost} 点（余额 {before}->{after}）",
         "msg.system_updated": "系统提示词已更新。",
         "msg.mode_set": "模式已切换为 {mode}",
         "msg.invalid_mode": "无效模式：{mode}",

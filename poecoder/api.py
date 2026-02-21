@@ -23,6 +23,7 @@ from poecoder.models import (
     MemoryEditRequest,
     MemoryReadRequest,
     MemoryWriteRequest,
+    ProviderBaseUrlRequest,
     GetWebRawRequest,
     GetWebRequest,
     GetWebFileRequest,
@@ -48,6 +49,7 @@ from poecoder.models import (
     ToolCall,
     TaskStartSubagentRequest,
 )
+from poecoder.services.model_clients import ModelProviderError
 
 STATE: AppState | None = None
 
@@ -73,6 +75,10 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _as_http_error(exc: ModelProviderError) -> HTTPException:
+    return HTTPException(status_code=exc.http_status, detail=exc.to_payload())
+
+
 @app.post("/auth/poe/login")
 def auth_poe_login(req: ApiLoginRequest) -> dict[str, Any]:
     state = get_state()
@@ -81,12 +87,52 @@ def auth_poe_login(req: ApiLoginRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="api_key is required")
 
     state.settings.poe_api_key = api_key
-    state.turns.model_client.api_key = api_key
-    state.subagents.model_client.api_key = api_key
-    state.reviews.model_client.api_key = api_key
+    state.turns.model_client.update_poe(api_key=api_key)
+    state.subagents.model_client.update_poe(api_key=api_key)
+    state.reviews.model_client.update_poe(api_key=api_key)
     state.model_catalog.api_key = api_key
     state.usage.api_key = api_key
     return {"ok": True, "message": "poe api key updated"}
+
+
+@app.post("/auth/openai/login")
+def auth_openai_login(req: ApiLoginRequest) -> dict[str, Any]:
+    state = get_state()
+    api_key = req.api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+
+    state.settings.openai_api_key = api_key
+    state.turns.model_client.update_openai(api_key=api_key)
+    state.subagents.model_client.update_openai(api_key=api_key)
+    state.reviews.model_client.update_openai(api_key=api_key)
+    return {"ok": True, "message": "openai api key updated"}
+
+
+@app.post("/providers/poe/base-url")
+def provider_poe_base_url(req: ProviderBaseUrlRequest) -> dict[str, Any]:
+    state = get_state()
+    base_url = req.base_url.strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url is required")
+    state.settings.poe_api_url = base_url
+    state.turns.model_client.update_poe(base_url=base_url)
+    state.subagents.model_client.update_poe(base_url=base_url)
+    state.reviews.model_client.update_poe(base_url=base_url)
+    return {"ok": True, "base_url": state.turns.model_client.api_url}
+
+
+@app.post("/providers/openai/base-url")
+def provider_openai_base_url(req: ProviderBaseUrlRequest) -> dict[str, Any]:
+    state = get_state()
+    base_url = req.base_url.strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url is required")
+    state.settings.openai_api_url = base_url
+    state.turns.model_client.update_openai(base_url=base_url)
+    state.subagents.model_client.update_openai(base_url=base_url)
+    state.reviews.model_client.update_openai(base_url=base_url)
+    return {"ok": True, "base_url": state.turns.model_client.openai_api_url}
 
 
 @app.post("/sessions")
@@ -187,6 +233,8 @@ async def turn_execute(req: TurnRequest) -> dict[str, Any]:
     try:
         result = await state.turns.execute(req)
         return result.model_dump(mode="json")
+    except ModelProviderError as exc:
+        raise _as_http_error(exc) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -196,6 +244,8 @@ async def review(req: ReviewRequest) -> dict[str, Any]:
     state = get_state()
     try:
         return await state.reviews.run(req)
+    except ModelProviderError as exc:
+        raise _as_http_error(exc) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -226,8 +276,12 @@ async def turn_execute_stream(req: TurnRequest) -> StreamingResponse:
     state = get_state()
 
     async def event_gen():
-        async for event in state.turns.execute_stream(req):
-            payload = json.dumps(event, ensure_ascii=True)
+        try:
+            async for event in state.turns.execute_stream(req):
+                payload = json.dumps(event, ensure_ascii=True)
+                yield f"data: {payload}\n\n"
+        except ModelProviderError as exc:
+            payload = json.dumps({"type": "error", "data": exc.to_payload()}, ensure_ascii=True)
             yield f"data: {payload}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")

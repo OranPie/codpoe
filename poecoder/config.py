@@ -10,6 +10,9 @@ class Settings:
     db_path: Path
     poe_api_url: str
     poe_api_key: str | None
+    openai_api_url: str
+    openai_api_key: str | None
+    openai_models: list[str]
     default_small_model: str
     default_large_model: str
     default_thinking_level: str
@@ -46,14 +49,18 @@ def get_settings() -> Settings:
     reviewer_model = os.environ.get("POECODER_REVIEWER_MODEL", default_large)
     reviewer_thinking_level = os.environ.get("POECODER_REVIEWER_THINKING_LEVEL", "deep")
     reviewer_thinking_budget = int(os.environ.get("POECODER_REVIEWER_THINKING_BUDGET", "16000"))
+    openai_models = _parse_models(os.environ.get("POECODER_OPENAI_MODELS", ""), [])
     supported = _parse_models(
         os.environ.get("POECODER_MODELS", ""),
-        [default_small, default_large],
+        [default_small, default_large, *openai_models],
     )
     return Settings(
         db_path=db_path,
         poe_api_url=os.environ.get("POECODER_POE_API_URL", "https://api.poe.com/bot/"),
         poe_api_key=os.environ.get("POECODER_POE_API_KEY"),
+        openai_api_url=os.environ.get("POECODER_OPENAI_API_URL", "https://api.openai.com/v1"),
+        openai_api_key=os.environ.get("POECODER_OPENAI_API_KEY"),
+        openai_models=openai_models,
         default_small_model=default_small,
         default_large_model=default_large,
         default_thinking_level=default_thinking_level,

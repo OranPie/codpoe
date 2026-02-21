@@ -47,7 +47,11 @@ class ModelCatalog:
                 if isinstance(model_id, str) and model_id and model_id not in models:
                     models.append(model_id)
             if models:
-                self.supported_models = models
+                merged: list[str] = []
+                for item in [*self.supported_models, *models]:
+                    if item and item not in merged:
+                        merged.append(item)
+                self.supported_models = merged
                 self._last_fetch_at = now
         except Exception:
             # Keep local fallback model list if remote fetch fails.

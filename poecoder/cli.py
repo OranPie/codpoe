@@ -75,7 +75,13 @@ class PoeCoderCLI:
         self.state.thinking_level = self.settings.default_thinking_level
         self.state.thinking_budget = self.settings.default_thinking_budget
         self.http = httpx.Client(timeout=90.0)
-        self.direct_model_client = PoeModelClient(self.settings.poe_api_url, self.settings.poe_api_key)
+        self.direct_model_client = PoeModelClient(
+            api_url=self.settings.poe_api_url,
+            api_key=self.settings.poe_api_key,
+            openai_api_url=self.settings.openai_api_url,
+            openai_api_key=self.settings.openai_api_key,
+            openai_models=self.settings.openai_models,
+        )
         self.style = Style()
         self.i18n = Translator(lang=normalize_lang(lang or self.settings.lang))
 
@@ -315,7 +321,7 @@ class PoeCoderCLI:
             print(self.style.warn(self._t("msg.login_cancelled")))
             return
         self.settings.poe_api_key = api_key
-        self.direct_model_client.api_key = api_key
+        self.direct_model_client.update_poe(api_key=api_key)
         if self.direct:
             print(self.style.ok(self._t("msg.login_direct_updated")))
             return
@@ -337,16 +343,90 @@ class PoeCoderCLI:
         self.state.pending_images.clear()
         return images
 
+    def _read_balance_points(self) -> int | None:
+        if self.direct:
+            return None
+        try:
+            resp = self.http.get(f"{self.state.backend_url}/usage/current_balance")
+            resp.raise_for_status()
+            data = resp.json()
+            points = data.get("current_point_balance")
+            return int(points) if isinstance(points, int) else None
+        except Exception:
+            return None
+
+    def _render_message_cost(self, before_points: int | None, after_points: int | None) -> None:
+        if before_points is None or after_points is None:
+            return
+        cost = before_points - after_points
+        print(
+            self.style.dim(
+                self._t(
+                    "msg.message_cost",
+                    cost=cost,
+                    before=before_points,
+                    after=after_points,
+                )
+            )
+        )
+
+    def _investigate_backend_reason(self, exc: Exception) -> str | None:
+        text = str(exc).lower()
+        if "incomplete chunked read" in text or "peer closed connection" in text:
+            return self._t("msg.backend_reason_stream_drop")
+        if "event loop is closed" in text:
+            return self._t("msg.backend_reason_event_loop")
+        if "connection refused" in text:
+            return self._t("msg.backend_reason_down")
+        if "poe_non_sse_error" in text:
+            return self._t("msg.backend_reason_poe_non_sse")
+        return None
+
+    @staticmethod
+    def _extract_backend_error(exc: Exception) -> tuple[str, str | None]:
+        if isinstance(exc, httpx.HTTPStatusError):
+            response = exc.response
+            code = None
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                detail = payload.get("detail")
+                if isinstance(detail, dict):
+                    code = str(detail.get("code", "")) or None
+                    message = str(detail.get("detail", "")).strip()
+                    hint = str(detail.get("hint", "")).strip()
+                    if code and message:
+                        rendered = f"{response.status_code} {code}: {message}"
+                    elif message:
+                        rendered = f"{response.status_code}: {message}"
+                    else:
+                        rendered = str(exc)
+                    if hint:
+                        rendered = f"{rendered} (hint: {hint})"
+                    return rendered, code
+                if isinstance(detail, str) and detail.strip():
+                    return f"{response.status_code}: {detail.strip()}", None
+            return f"{response.status_code}: {exc}", None
+        return str(exc), None
+
     def _render_backend_error(self, exc: Exception, startup: bool = False) -> None:
+        rendered_error, code = self._extract_backend_error(exc)
         print(
             self.style.error(
                 self._t(
                     "msg.backend_unreachable",
                     url=self.state.backend_url,
-                    error=str(exc),
+                    error=rendered_error,
                 )
             )
         )
+        reason = self._investigate_backend_reason(exc)
+        if not reason and code == "poe_non_sse_error":
+            reason = self._t("msg.backend_reason_poe_non_sse")
+        if reason:
+            print(self.style.dim(self._t("msg.backend_reason_prefix", reason=reason)))
         print(self.style.dim(self._t("msg.backend_retry_hint")))
         if startup and not self.direct:
             self.direct = True
@@ -380,8 +460,11 @@ class PoeCoderCLI:
                 asyncio.run(self._run_direct_turn(raw, images))
             else:
                 images = self._consume_pending_images()
+                before_points = self._read_balance_points()
                 try:
                     asyncio.run(self._run_backend_turn(raw, images))
+                    after_points = self._read_balance_points()
+                    self._render_message_cost(before_points, after_points)
                 except httpx.HTTPError as exc:
                     self._render_backend_error(exc)
                 except RuntimeError as exc:
@@ -405,11 +488,11 @@ class PoeCoderCLI:
                 return False
             if self.direct:
                 self.settings.poe_api_key = api_key
-                self.direct_model_client.api_key = api_key
+                self.direct_model_client.update_poe(api_key=api_key)
                 print(self.style.ok(self._t("msg.login_direct_updated")))
                 return False
             self.settings.poe_api_key = api_key
-            self.direct_model_client.api_key = api_key
+            self.direct_model_client.update_poe(api_key=api_key)
             try:
                 resp = self.http.post(
                     f"{self.state.backend_url}/auth/poe/login",
@@ -417,6 +500,27 @@ class PoeCoderCLI:
                 )
                 resp.raise_for_status()
                 print(self.style.ok(self._t("msg.login_backend_updated")))
+            except httpx.HTTPError as exc:
+                print(self.style.warn(self._t("msg.login_backend_failed_direct_only")))
+                self._render_backend_error(exc)
+            return False
+        if cmd == "/loginopenai":
+            api_key = parts[1].strip() if len(parts) >= 2 else self._prompt_api_key()
+            if not api_key:
+                print(self.style.warn(self._t("msg.login_cancelled")))
+                return False
+            self.settings.openai_api_key = api_key
+            self.direct_model_client.update_openai(api_key=api_key)
+            if self.direct:
+                print(self.style.ok(self._t("msg.login_direct_updated")))
+                return False
+            try:
+                resp = self.http.post(
+                    f"{self.state.backend_url}/auth/openai/login",
+                    json={"api_key": api_key},
+                )
+                resp.raise_for_status()
+                print(self.style.ok(self._t("msg.login_openai_backend_updated")))
             except httpx.HTTPError as exc:
                 print(self.style.warn(self._t("msg.login_backend_failed_direct_only")))
                 self._render_backend_error(exc)
@@ -911,60 +1015,103 @@ class PoeCoderCLI:
             "context_keys": [],
             "metadata": {},
         }
-        saw_delta = False
         async with httpx.AsyncClient(timeout=90.0) as async_http:
-            async with async_http.stream(
-                "POST",
-                f"{self.state.backend_url}/turns/execute/stream",
-                json=payload,
-                headers={"Accept": "text/event-stream"},
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    event = json.loads(line[6:])
-                    etype = event.get("type")
-                    data = event.get("data")
-                    if etype == "status":
-                        status_key = str(data)
-                        label = self._t(f"status.{status_key}")
-                        if label.startswith("status."):
-                            label = status_key
-                        print(self.style.dim(f"[{label}]"))
-                        continue
-                    if etype == "model":
-                        print(self.style.info(self._t("stream.model", model=data.get("model"))))
-                        continue
-                    if etype == "tool":
-                        name = data.get("name", "tool")
-                        print(self.style.info(self._t("stream.tool", name=name)))
-                        continue
-                    if etype == "delta":
-                        if not saw_delta:
-                            print(self.style.title(self._t("stream.assistant")), end="")
-                            saw_delta = True
-                        print(data, end="", flush=True)
-                        continue
-                    if etype == "final":
-                        if saw_delta:
-                            print()
-                            meta = data if isinstance(data, dict) else {}
-                            if meta.get("model"):
-                                self.state.active_model = str(meta.get("model"))
-                            print(
-                                self.style.dim(
-                                    self._t(
-                                        "stream.done",
-                                        model=meta.get("model"),
-                                        tools=len(meta.get("tool_events", [])),
-                                    )
-                                )
-                            )
-                        else:
-                            text = data.get("output_text", "") if isinstance(data, dict) else ""
-                            print(text)
-                        continue
+            saw_delta = False
+            try:
+                saw_delta = await self._stream_backend_turn(async_http, payload)
+                return
+            except httpx.HTTPError:
+                # If we already emitted partial assistant output, avoid replaying the request.
+                if saw_delta:
+                    print()
+                    raise
+                print(self.style.dim(self._t("msg.stream_retry_nonstream")))
+                payload = await self._run_backend_turn_nonstream(async_http, payload)
+                self._render_backend_nonstream_result(payload)
+
+    async def _stream_backend_turn(self, async_http: httpx.AsyncClient, payload: dict[str, Any]) -> bool:
+        saw_delta = False
+        async with async_http.stream(
+            "POST",
+            f"{self.state.backend_url}/turns/execute/stream",
+            json=payload,
+            headers={"Accept": "text/event-stream"},
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                event = json.loads(line[6:])
+                etype = event.get("type")
+                data = event.get("data")
+                if etype == "status":
+                    status_key = str(data)
+                    label = self._t(f"status.{status_key}")
+                    if label.startswith("status."):
+                        label = status_key
+                    print(self.style.dim(f"[{label}]"))
+                    continue
+                if etype == "model":
+                    print(self.style.info(self._t("stream.model", model=data.get("model"))))
+                    continue
+                if etype == "tool":
+                    name = data.get("name", "tool")
+                    print(self.style.info(self._t("stream.tool", name=name)))
+                    continue
+                if etype == "delta":
+                    if not saw_delta:
+                        print(self.style.title(self._t("stream.assistant")), end="")
+                        saw_delta = True
+                    print(data, end="", flush=True)
+                    continue
+                if etype == "error":
+                    if isinstance(data, dict):
+                        code = data.get("code", "error")
+                        detail = data.get("detail", "backend stream error")
+                        hint = data.get("hint")
+                        rendered = f"{code}: {detail}"
+                        if hint:
+                            rendered += f" (hint: {hint})"
+                    else:
+                        rendered = str(data)
+                    raise httpx.HTTPError(rendered)
+                if etype == "final":
+                    if saw_delta:
+                        print()
+                    self._render_backend_nonstream_result(
+                        data if isinstance(data, dict) else {},
+                        show_text=not saw_delta,
+                    )
+                    continue
+        return saw_delta
+
+    async def _run_backend_turn_nonstream(self, async_http: httpx.AsyncClient, payload: dict[str, Any]) -> dict[str, Any]:
+        resp = await async_http.post(
+            f"{self.state.backend_url}/turns/execute",
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def _render_backend_nonstream_result(self, payload: dict[str, Any], show_text: bool = True) -> None:
+        if not isinstance(payload, dict):
+            return
+        text = str(payload.get("output_text", ""))
+        if show_text and text:
+            print(self.style.title(self._t("stream.assistant")) + text)
+        model = payload.get("model")
+        if model:
+            self.state.active_model = str(model)
+            print(
+                self.style.dim(
+                    self._t(
+                        "stream.done",
+                        model=model,
+                        tools=len(payload.get("tool_events", [])),
+                    )
+                )
+            )
 
     async def _run_direct_turn(self, prompt: str, images: list[str] | None = None) -> None:
         direct_context = dict(self.state.local_context)

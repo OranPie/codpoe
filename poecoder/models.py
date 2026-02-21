@@ -52,6 +52,10 @@ class ApiLoginRequest(BaseModel):
     api_key: str
 
 
+class ProviderBaseUrlRequest(BaseModel):
+    base_url: str
+
+
 class SessionThinkingRequest(BaseModel):
     thinking_level: Literal["quick", "balanced", "deep"]
     thinking_budget: int = Field(ge=100, le=500000)

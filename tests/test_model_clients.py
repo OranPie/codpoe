@@ -37,3 +37,45 @@ def test_chat_builds_image_attachments(monkeypatch, tmp_path) -> None:
     assert len(user_message.attachments) == 2
     assert user_message.attachments[0].url.startswith("data:image/png;base64,")
     assert user_message.attachments[1].url == "https://example.com/image.jpg"
+
+
+def test_chat_routes_to_openai_when_model_has_prefix(monkeypatch) -> None:
+    called: dict[str, str] = {}
+
+    async def fake_openai(model, system_message, user_prompt, context, images):
+        called["model"] = model
+        return type("Reply", (), {"text": "oa-ok", "raw": {"provider": "openai"}})()
+
+    async def run() -> None:
+        client = PoeModelClient(
+            api_url="https://api.poe.com/bot/",
+            api_key="poe-key",
+            openai_api_url="https://openai.local/v1/",
+            openai_api_key="oa-key",
+            openai_models=["gpt-4.1-mini"],
+        )
+        monkeypatch.setattr(client, "_chat_openai", fake_openai)
+        reply = await client.chat(
+            model="openai/gpt-4.1-mini",
+            system_message="sys",
+            user_prompt="hello",
+            context={},
+            images=[],
+        )
+        assert reply.text == "oa-ok"
+
+    asyncio.run(run())
+    assert called["model"] == "gpt-4.1-mini"
+
+
+def test_update_provider_base_urls() -> None:
+    client = PoeModelClient(
+        api_url="https://api.poe.com",
+        api_key="poe-key",
+        openai_api_url="https://openai.local/v1/",
+        openai_api_key="oa-key",
+    )
+    client.update_poe(base_url="https://poe.proxy.local")
+    client.update_openai(base_url="https://openai.proxy.local/v1/")
+    assert client.api_url == "https://poe.proxy.local/"
+    assert client.openai_api_url == "https://openai.proxy.local/v1"

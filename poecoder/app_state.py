@@ -54,7 +54,13 @@ def build_app_state(workspace_root: Path | None = None) -> AppState:
     db = Database(settings.db_path)
 
     policy = PolicyEngine()
-    model_client = PoeModelClient(settings.poe_api_url, settings.poe_api_key)
+    model_client = PoeModelClient(
+        api_url=settings.poe_api_url,
+        api_key=settings.poe_api_key,
+        openai_api_url=settings.openai_api_url,
+        openai_api_key=settings.openai_api_key,
+        openai_models=settings.openai_models,
+    )
     router = ModelRouter(settings.default_small_model, settings.default_large_model)
     model_catalog = ModelCatalog(settings.supported_models, api_key=settings.poe_api_key)
     model_profiles = ModelProfileService(db=db)

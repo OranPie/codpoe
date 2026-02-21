@@ -73,6 +73,38 @@ def test_tool_read_raw_endpoint(monkeypatch, tmp_path):
     assert "b" in resp.json()["content"]
 
 
+def test_tool_listfile_changeworkdir_and_exit(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.txt").write_text("b\n", encoding="utf-8")
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+
+    listed = client.post("/tools/invoke", json={"name": "ListFile", "args": {"pattern": "*.txt", "recursive": True}})
+    assert listed.status_code == 200
+    entries = listed.json()["result"]["entries"]
+    assert "a.txt" in entries
+    assert "sub/b.txt" in entries
+
+    changed = client.post("/tools/invoke", json={"name": "ChangeWorkDir", "args": {"path": "sub"}})
+    assert changed.status_code == 200
+    assert changed.json()["result"]["cwd"] == "sub"
+
+    listed_sub = client.post("/tools/invoke", json={"name": "ListFile", "args": {"pattern": "*.txt"}})
+    assert listed_sub.status_code == 200
+    assert listed_sub.json()["result"]["entries"] == ["sub/b.txt"]
+
+    exited = client.post("/tools/invoke", json={"name": "Exit", "args": {"reason": "done"}})
+    assert exited.status_code == 200
+    assert exited.json()["result"]["exit"] is True
+    assert exited.json()["result"]["reason"] == "done"
+
+
 def test_listmodels_and_changemodel(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -122,6 +154,32 @@ def test_api_login_updates_runtime_keys(monkeypatch, tmp_path):
     assert api.STATE.reviews.model_client.api_key == "demo-key"
     assert api.STATE.model_catalog.api_key == "demo-key"
     assert api.STATE.usage.api_key == "demo-key"
+
+
+def test_openai_login_and_base_url_update(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+    monkeypatch.delenv("POECODER_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("POECODER_OPENAI_API_URL", "https://openai.example/v1")
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+
+    login = client.post("/auth/openai/login", json={"api_key": "oa-demo-key"})
+    assert login.status_code == 200
+    assert login.json()["ok"] is True
+    assert api.STATE is not None
+    assert api.STATE.settings.openai_api_key == "oa-demo-key"
+    assert api.STATE.turns.model_client.openai_api_key == "oa-demo-key"
+    assert api.STATE.subagents.model_client.openai_api_key == "oa-demo-key"
+    assert api.STATE.reviews.model_client.openai_api_key == "oa-demo-key"
+
+    base_url = client.post("/providers/openai/base-url", json={"base_url": "https://proxy.openai.local/v1/"})
+    assert base_url.status_code == 200
+    assert base_url.json()["base_url"] == "https://proxy.openai.local/v1"
+    assert api.STATE.settings.openai_api_url == "https://proxy.openai.local/v1/"
 
 
 def test_usage_balance_and_tool(monkeypatch, tmp_path):
@@ -194,6 +252,77 @@ def test_turn_model_tool_communication(monkeypatch, tmp_path):
     assert len(payload["tool_events"]) == 1
     assert payload["tool_events"][0]["name"] == "GetBalance"
     assert payload["tool_events"][0]["result"]["current_point_balance"] == 321
+
+
+def test_turn_execute_maps_provider_errors(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelProviderError
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def fail_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        raise ModelProviderError(
+            model=model,
+            code="poe_non_sse_error",
+            detail="Poe returned non-SSE response",
+            hint="check model and key",
+            http_status=502,
+        )
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fail_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    turn_resp = client.post(
+        "/turns/execute",
+        json={"session_id": session_id, "user_prompt": "hello"},
+    )
+    assert turn_resp.status_code == 502
+    detail = turn_resp.json()["detail"]
+    assert detail["code"] == "poe_non_sse_error"
+    assert "non-SSE" in detail["detail"]
+
+
+def test_turn_stream_emits_error_event_on_provider_failure(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelProviderError
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def fail_stream(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        raise ModelProviderError(
+            model=model,
+            code="poe_non_sse_error",
+            detail="Poe returned non-SSE response",
+            hint="check model and key",
+            http_status=502,
+        )
+        yield ""  # pragma: no cover
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat_stream", fail_stream)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+
+    events: list[dict[str, object]] = []
+    with client.stream(
+        "POST",
+        "/turns/execute/stream",
+        json={"session_id": session_id, "user_prompt": "hello"},
+    ) as resp:
+        assert resp.status_code == 200
+        for line in resp.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    errors = [event["data"] for event in events if event.get("type") == "error"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == "poe_non_sse_error"
 
 
 def test_turn_stream_emits_delta_and_final(monkeypatch, tmp_path):
@@ -752,3 +881,6 @@ def test_model_table_endpoints(monkeypatch, tmp_path):
     assert "Review" in names
     assert "ReadTaskOutput" in names
     assert "StartLeaderRun" in names
+    assert "ListFile" in names
+    assert "ChangeWorkDir" in names
+    assert "Exit" in names
