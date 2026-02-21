@@ -58,7 +58,7 @@ class PoeModelClient:
         self.api_key = api_key
         self.openai_api_url = self._normalize_openai_api_url(openai_api_url)
         self.openai_api_key = openai_api_key
-        self.openai_models = set(openai_models or [])
+        self.openai_models = {self._strip_openai_prefix(name) for name in (openai_models or []) if name}
 
     def update_poe(self, api_key: str | None = None, base_url: str | None = None) -> None:
         if api_key is not None:
@@ -242,9 +242,15 @@ class PoeModelClient:
             return "openai", model.split("/", 1)[1]
         if model.startswith("oa:"):
             return "openai", model.split(":", 1)[1]
-        if model in self.openai_models:
-            return "openai", model
         return "poe", model
+
+    @staticmethod
+    def _strip_openai_prefix(model: str) -> str:
+        if model.startswith("openai/"):
+            return model.split("/", 1)[1]
+        if model.startswith("oa:"):
+            return model.split(":", 1)[1]
+        return model
 
     async def _chat_openai(
         self,

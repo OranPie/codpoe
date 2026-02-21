@@ -38,6 +38,22 @@ def _parse_models(raw: str, defaults: list[str]) -> list[str]:
     return out
 
 
+def _normalize_openai_models(raw: str) -> list[str]:
+    items = _parse_models(raw, [])
+    out: list[str] = []
+    for item in items:
+        name = item.strip()
+        if not name:
+            continue
+        if name.startswith("oa:"):
+            name = f"openai/{name.split(':', 1)[1]}"
+        if not name.startswith("openai/"):
+            name = f"openai/{name}"
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def get_settings() -> Settings:
     home = Path(os.environ.get("POECODER_HOME", Path.home() / ".poecoder"))
     home.mkdir(parents=True, exist_ok=True)
@@ -49,7 +65,7 @@ def get_settings() -> Settings:
     reviewer_model = os.environ.get("POECODER_REVIEWER_MODEL", default_large)
     reviewer_thinking_level = os.environ.get("POECODER_REVIEWER_THINKING_LEVEL", "deep")
     reviewer_thinking_budget = int(os.environ.get("POECODER_REVIEWER_THINKING_BUDGET", "16000"))
-    openai_models = _parse_models(os.environ.get("POECODER_OPENAI_MODELS", ""), [])
+    openai_models = _normalize_openai_models(os.environ.get("POECODER_OPENAI_MODELS", ""))
     supported = _parse_models(
         os.environ.get("POECODER_MODELS", ""),
         [default_small, default_large, *openai_models],

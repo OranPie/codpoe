@@ -79,3 +79,37 @@ def test_update_provider_base_urls() -> None:
     client.update_openai(base_url="https://openai.proxy.local/v1/")
     assert client.api_url == "https://poe.proxy.local/"
     assert client.openai_api_url == "https://openai.proxy.local/v1"
+
+
+def test_bare_model_name_stays_on_poe_even_if_openai_models_configured(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_get_bot_response(messages, bot_name, api_key, base_url):
+        captured["bot_name"] = bot_name
+        yield fp.PartialResponse(text="poe-ok")
+
+    async def fail_openai(*args, **kwargs):
+        raise AssertionError("openai path should require openai/ prefix")
+
+    monkeypatch.setattr(fp, "get_bot_response", fake_get_bot_response)
+
+    async def run() -> None:
+        client = PoeModelClient(
+            api_url="https://api.poe.com/bot/",
+            api_key="poe-key",
+            openai_api_url="https://openai.local/v1",
+            openai_api_key="oa-key",
+            openai_models=["openai/gpt-4.1-mini"],
+        )
+        monkeypatch.setattr(client, "_chat_openai", fail_openai)
+        reply = await client.chat(
+            model="gpt-4.1-mini",
+            system_message="sys",
+            user_prompt="hello",
+            context={},
+            images=[],
+        )
+        assert reply.text == "poe-ok"
+
+    asyncio.run(run())
+    assert captured["bot_name"] == "gpt-4.1-mini"

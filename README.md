@@ -30,6 +30,7 @@ PoeCoder is a Python coding assistant runtime with:
 - `/changemodel <name|auto>` to switch main model during a session.
 - `/login [api_key]` to set/update Poe API key (prompts securely when omitted).
 - `/loginopenai [api_key]` to set/update OpenAI API key.
+- OpenAI models should be selected with `openai/<model>` prefix (avoids name collisions with Poe model names).
 - `/plan` to switch to planning mode with planning-focused system message.
 - `/thinking <quick|balanced|deep> [budget]` to control model reasoning depth/token budget hints.
 - `/commandpolicy <allow|deny> [encourage|noencourage]` to control model self-command creation autonomy.
@@ -43,6 +44,7 @@ PoeCoder is a Python coding assistant runtime with:
 - Provider base URIs are configurable:
   - `POECODER_POE_API_URL` (default `https://api.poe.com/bot/`)
   - `POECODER_OPENAI_API_URL` (default `https://api.openai.com/v1`)
+  - `POECODER_OPENAI_MODELS` accepts comma-separated OpenAI model names and auto-normalizes to `openai/<model>`.
   - Runtime update endpoints: `POST /providers/poe/base-url`, `POST /providers/openai/base-url`.
 
 - Base main/subagent system prompts live in `poecoder/prompts.py`.
