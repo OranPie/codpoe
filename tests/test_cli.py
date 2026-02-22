@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import json
 
 import httpx
 
@@ -254,6 +255,70 @@ def test_cli_stream_error_retries_nonstream_once(monkeypatch) -> None:
 
     asyncio.run(cli._run_backend_turn("hello"))
     assert cli.state.active_model == "assistant"
+
+
+def test_cli_stream_thinking_indicator_starts_and_stops(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    cli.state.session_id = "s1"
+    calls = {"started": 0, "stopped": 0}
+
+    async def fake_indicator(stop_event: asyncio.Event) -> None:
+        calls["started"] += 1
+        await stop_event.wait()
+        calls["stopped"] += 1
+
+    monkeypatch.setattr(cli, "_thinking_indicator_loop", fake_indicator)
+
+    class FakeResp:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = lines
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+
+    class FakeStreamCtx:
+        def __init__(self, lines: list[str]) -> None:
+            self._resp = FakeResp(lines)
+
+        async def __aenter__(self):
+            return self._resp
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class FakeAsyncHTTP:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = lines
+
+        def stream(self, method: str, url: str, json: dict | None = None, headers: dict | None = None):
+            del method, url, json, headers
+            return FakeStreamCtx(self._lines)
+
+    lines = [
+        "data: " + json.dumps({"type": "status", "data": "responding"}),
+        "data: " + json.dumps({"type": "delta", "data": "Hello"}),
+        "data: "
+        + json.dumps(
+            {
+                "type": "final",
+                "data": {"session_id": "s1", "model": "assistant", "output_text": "Hello", "tool_events": []},
+            }
+        ),
+    ]
+    saw_delta = asyncio.run(cli._stream_backend_turn(FakeAsyncHTTP(lines), {"session_id": "s1", "user_prompt": "hi"}))
+    assert saw_delta is True
+    assert calls["started"] == 1
+    assert calls["stopped"] == 1
 
 
 def test_cli_backend_turn_handles_ask_without_manual_new_prompt(monkeypatch) -> None:

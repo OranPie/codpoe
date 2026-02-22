@@ -7,6 +7,7 @@ import mimetypes
 import re
 import shlex
 import sys
+from contextlib import suppress
 from getpass import getpass
 from base64 import b64encode
 from datetime import datetime
@@ -250,6 +251,18 @@ class PoeCoderCLI:
             return
         for line in lines:
             print(self._render_markdown_line(line, md_state))
+
+    async def _thinking_indicator_loop(self, stop_event: asyncio.Event) -> None:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        last_elapsed = 0
+        while not stop_event.is_set():
+            await asyncio.sleep(0.1)
+            elapsed = int(loop.time() - started)
+            if elapsed <= 0 or elapsed == last_elapsed:
+                continue
+            last_elapsed = elapsed
+            print(self.style.dim(self._t("msg.thinking_indicator", seconds=elapsed)))
 
     def _print_table(self, headers: list[str], rows: list[list[str]]) -> None:
         if not rows:
@@ -1860,73 +1873,103 @@ class PoeCoderCLI:
         self._last_stream_final = None
         pending_delta = ""
         md_state = {"in_code_block": False}
-        async with async_http.stream(
-            "POST",
-            f"{self.state.backend_url}/turns/execute/stream",
-            json=payload,
-            headers={"Accept": "text/event-stream"},
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                event = json.loads(line[6:])
-                etype = event.get("type")
-                data = event.get("data")
-                if etype == "status":
-                    status_key = str(data)
-                    label = self._t(f"status.{status_key}")
-                    if label.startswith("status."):
-                        label = status_key
-                    print(self.style.dim(f"[{label}]"))
-                    continue
-                if etype == "model":
-                    print(self.style.info(self._t("stream.model", model=data.get("model"))))
-                    continue
-                if etype == "tool":
-                    if isinstance(data, dict):
-                        tool_idx += 1
-                        self._render_tool_event(data, tool_idx)
-                    else:
-                        name = "tool"
-                        print(self.style.info(self._t("stream.tool", name=name)))
-                    continue
-                if etype == "delta":
-                    if not saw_delta:
-                        print(self.style.title(self._t("stream.assistant")))
-                        saw_delta = True
-                    pending_delta += str(data or "")
-                    pending_delta = self._render_markdown_stream_buffer(pending_delta, md_state)
-                    continue
-                if etype == "ask":
-                    if isinstance(data, dict):
-                        print(self.style.info(self._t("msg.ask_from_model", prompt=str(data.get("prompt", "")))))
-                    continue
-                if etype == "error":
-                    if isinstance(data, dict):
-                        code = data.get("code", "error")
-                        detail = data.get("detail", "backend stream error")
-                        hint = data.get("hint")
-                        retryable = bool(data.get("retryable", False))
-                        rendered = f"{code}: {detail}"
-                        if hint:
-                            rendered += f" (hint: {hint})"
-                    else:
-                        retryable = False
-                        rendered = str(data)
-                    raise StreamEventError(rendered, retryable=retryable)
-                if etype == "final":
-                    self._last_stream_final = data if isinstance(data, dict) else {}
-                    if saw_delta:
-                        if pending_delta:
-                            print(self._render_markdown_line(pending_delta, md_state))
-                            pending_delta = ""
-                        print()
-                    self._render_backend_nonstream_result(
-                        data if isinstance(data, dict) else {},
-                        show_text=not saw_delta,
-                    )
-                    continue
+        indicator_stop: asyncio.Event | None = None
+        indicator_task: asyncio.Task[None] | None = None
+
+        def _ensure_indicator_started() -> None:
+            nonlocal indicator_stop, indicator_task
+            if indicator_task is not None:
+                return
+            indicator_stop = asyncio.Event()
+            indicator_task = asyncio.create_task(self._thinking_indicator_loop(indicator_stop))
+
+        async def _stop_indicator() -> None:
+            nonlocal indicator_stop, indicator_task
+            if indicator_task is None:
+                return
+            if indicator_stop is not None:
+                indicator_stop.set()
+            with suppress(asyncio.CancelledError):
+                await indicator_task
+            indicator_stop = None
+            indicator_task = None
+        try:
+            async with async_http.stream(
+                "POST",
+                f"{self.state.backend_url}/turns/execute/stream",
+                json=payload,
+                headers={"Accept": "text/event-stream"},
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    event = json.loads(line[6:])
+                    etype = event.get("type")
+                    data = event.get("data")
+                    if etype == "status":
+                        status_key = str(data)
+                        label = self._t(f"status.{status_key}")
+                        if label.startswith("status."):
+                            label = status_key
+                        print(self.style.dim(f"[{label}]"))
+                        if status_key == "responding":
+                            _ensure_indicator_started()
+                        continue
+                    if etype == "model":
+                        print(self.style.info(self._t("stream.model", model=data.get("model"))))
+                        continue
+                    if etype == "tool":
+                        await _stop_indicator()
+                        if isinstance(data, dict):
+                            tool_idx += 1
+                            self._render_tool_event(data, tool_idx)
+                        else:
+                            name = "tool"
+                            print(self.style.info(self._t("stream.tool", name=name)))
+                        continue
+                    if etype == "delta":
+                        await _stop_indicator()
+                        if not saw_delta:
+                            print(self.style.title(self._t("stream.assistant")))
+                            saw_delta = True
+                        pending_delta += str(data or "")
+                        pending_delta = self._render_markdown_stream_buffer(pending_delta, md_state)
+                        continue
+                    if etype == "ask":
+                        await _stop_indicator()
+                        if isinstance(data, dict):
+                            print(self.style.info(self._t("msg.ask_from_model", prompt=str(data.get("prompt", "")))))
+                        continue
+                    if etype == "error":
+                        await _stop_indicator()
+                        if isinstance(data, dict):
+                            code = data.get("code", "error")
+                            detail = data.get("detail", "backend stream error")
+                            hint = data.get("hint")
+                            retryable = bool(data.get("retryable", False))
+                            rendered = f"{code}: {detail}"
+                            if hint:
+                                rendered += f" (hint: {hint})"
+                        else:
+                            retryable = False
+                            rendered = str(data)
+                        raise StreamEventError(rendered, retryable=retryable)
+                    if etype == "final":
+                        await _stop_indicator()
+                        self._last_stream_final = data if isinstance(data, dict) else {}
+                        if saw_delta:
+                            if pending_delta:
+                                print(self._render_markdown_line(pending_delta, md_state))
+                                pending_delta = ""
+                            print()
+                        self._render_backend_nonstream_result(
+                            data if isinstance(data, dict) else {},
+                            show_text=not saw_delta,
+                        )
+                        continue
+        finally:
+            await _stop_indicator()
         return saw_delta
 
     async def _run_backend_turn_nonstream(self, async_http: httpx.AsyncClient, payload: dict[str, Any]) -> dict[str, Any]:

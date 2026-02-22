@@ -50,6 +50,7 @@ PoeCoder is a Python coding assistant runtime with:
 - CLI supports `/balance` to read current Poe point balance.
 - CLI output uses live streamed events (`status`, `tool`, `delta`) for better readability.
 - Assistant output now renders basic Markdown (headings/lists/inline code/code blocks) in colorful CUI style.
+- During streaming response wait, CLI shows `Thinking... (Ns elapsed)` as a lightweight elapsed-time indicator.
 - Provider base URIs are configurable:
   - `POECODER_POE_API_URL` (default `https://api.poe.com/bot/`)
   - `POECODER_OPENAI_API_URL` (default `https://api.openai.com/v1`)
