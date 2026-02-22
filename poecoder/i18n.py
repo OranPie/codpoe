@@ -58,6 +58,8 @@ Commands:
   /readtaskoutput <task_id>            Read task output/result only
   /canceltask <task_id>                Cancel background task
   /shell <danger> <command>           Run shell command through policy engine
+Protocol:
+  @ask {"prompt":"...","key":"..."}   Model asks for extra info; CLI prompts inline and auto-continues
 """.strip(),
         "msg.login_cancelled": "API key login cancelled.",
         "msg.api_key_missing_prompt": "No Poe API key configured. Enter one now (press Enter to skip).",
@@ -79,6 +81,10 @@ Commands:
         "msg.backend_retry_hint": "Start backend with `poecoder-api`, or run CLI with `--direct`.",
         "msg.backend_fallback_direct": "Switched to direct mode automatically (model={model}).",
         "msg.stream_retry_nonstream": "Streaming interrupted; retrying once in non-stream mode.",
+        "msg.ask_from_model": "model asks: {prompt}",
+        "msg.ask_input_prompt": "answer> ",
+        "msg.ask_empty_required": "Answer required; please enter a value.",
+        "msg.ask_loop_limit": "Ask loop limit reached; stopping automatic continuation.",
         "msg.message_cost": "message cost={cost} points (balance {before}->{after})",
         "msg.system_updated": "System message updated.",
         "msg.mode_set": "Mode set to {mode}",
@@ -233,6 +239,8 @@ Commands:
   /readtaskoutput <task_id>            仅查看任务输出结果
   /canceltask <task_id>                取消后台任务
   /shell <danger> <command>           通过策略引擎执行 shell 命令
+协议：
+  @ask {"prompt":"...","key":"..."}   模型可实时追问；CLI 内联收集输入并自动续跑
 """.strip(),
         "msg.login_cancelled": "已取消 API Key 登录。",
         "msg.api_key_missing_prompt": "未配置 Poe API Key。现在输入（直接回车可跳过）。",
@@ -254,6 +262,10 @@ Commands:
         "msg.backend_retry_hint": "请先运行 `poecoder-api`，或用 `--direct` 启动 CLI。",
         "msg.backend_fallback_direct": "已自动切换到直连模式（model={model}）。",
         "msg.stream_retry_nonstream": "流式输出中断；正在自动切换为非流式重试一次。",
+        "msg.ask_from_model": "模型提问：{prompt}",
+        "msg.ask_input_prompt": "回答> ",
+        "msg.ask_empty_required": "该问题必填，请输入内容。",
+        "msg.ask_loop_limit": "连续追问次数已达上限，已停止自动续跑。",
         "msg.message_cost": "单条消息成本={cost} 点（余额 {before}->{after}）",
         "msg.system_updated": "系统提示词已更新。",
         "msg.mode_set": "模式已切换为 {mode}",

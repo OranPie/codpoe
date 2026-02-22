@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from poecoder.models import RouterDecision, SessionResponse, TurnRequest
 from poecoder.services.turn_service import TurnService
-from poecoder.tools.runtime import parse_tool_calls
+from poecoder.tools.runtime import parse_ask_call, parse_tool_calls
 
 
 def test_parse_tool_calls_accepts_prefixed_text() -> None:
@@ -28,6 +28,20 @@ def test_parse_tool_calls_accepts_json_wrapper_fallback() -> None:
     text = '{"tool_name":"ListModels","args":{"refresh":false}}'
     calls = parse_tool_calls(text)
     assert calls == [{"name": "ListModels", "args": {"refresh": False}}]
+
+
+def test_parse_ask_call_from_json_payload() -> None:
+    ask = parse_ask_call('@ask {"prompt":"Which repo?","key":"repo","required":true}')
+    assert isinstance(ask, dict)
+    assert ask["prompt"] == "Which repo?"
+    assert ask["key"] == "repo"
+    assert bool(ask["required"]) is True
+
+
+def test_parse_ask_call_from_plain_line() -> None:
+    ask = parse_ask_call("@ask Please provide database URL")
+    assert isinstance(ask, dict)
+    assert ask["prompt"] == "Please provide database URL"
 
 
 def test_tool_event_forwarding_compacts_large_payload_in_auto_mode() -> None:

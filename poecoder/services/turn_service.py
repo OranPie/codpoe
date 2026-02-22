@@ -14,7 +14,7 @@ from poecoder.services.model_catalog import ModelCatalog
 from poecoder.services.model_clients import PoeModelClient
 from poecoder.services.model_profile_service import ModelProfileService
 from poecoder.services.session_service import SessionService
-from poecoder.tools.runtime import ToolRuntime, parse_tool_calls
+from poecoder.tools.runtime import ToolRuntime, parse_ask_call, parse_tool_calls
 
 
 @dataclass(slots=True)
@@ -32,6 +32,7 @@ class TurnService:
         tool_events: list[dict[str, Any]] = []
         usage = self._init_usage()
         output_text = ""
+        ask_request: dict[str, Any] | None = None
 
         phase = "tool_or_answer"
         current_prompt = req.user_prompt
@@ -58,6 +59,11 @@ class TurnService:
             )
 
             tool_calls = parse_tool_calls(reply.text)
+            ask_call = parse_ask_call(reply.text) if not tool_calls else None
+            if ask_call is not None:
+                ask_request = self._normalize_ask_request(ask_call)
+                output_text = ""
+                break
             if not tool_calls and self._needs_repair_output(reply.text) and repair_attempt < 1:
                 repair_attempt += 1
                 current_prompt = self._repair_prompt(current_prompt, repair_attempt)
@@ -99,6 +105,8 @@ class TurnService:
             output_text=output_text,
             tool_events=tool_events,
             usage=usage,
+            ask_request=ask_request,
+            awaiting_user_input=ask_request is not None,
         )
 
     async def execute_stream(self, req: TurnRequest) -> AsyncIterator[dict[str, Any]]:
@@ -110,6 +118,7 @@ class TurnService:
         tool_events: list[dict[str, Any]] = []
         usage = self._init_usage()
         output_text = ""
+        ask_request: dict[str, Any] | None = None
         phase = "tool_or_answer"
         current_prompt = req.user_prompt
         repair_attempt = 0
@@ -140,6 +149,11 @@ class TurnService:
             )
 
             tool_calls = parse_tool_calls(stage_text)
+            ask_call = parse_ask_call(stage_text) if not tool_calls else None
+            if ask_call is not None:
+                ask_request = self._normalize_ask_request(ask_call)
+                yield {"type": "ask", "data": ask_request}
+                break
             if not tool_calls and self._needs_repair_output(stage_text) and repair_attempt < 1:
                 repair_attempt += 1
                 current_prompt = self._repair_prompt(current_prompt, repair_attempt)
@@ -188,6 +202,8 @@ class TurnService:
             output_text=output_text,
             tool_events=tool_events,
             usage=usage,
+            ask_request=ask_request,
+            awaiting_user_input=ask_request is not None,
         )
         yield {"type": "final", "data": final.model_dump(mode="json")}
 
@@ -683,6 +699,8 @@ class TurnService:
         lowered = stripped.lower()
         if "@tool " in lowered:
             return False
+        if "@ask " in lowered:
+            return False
         remainder = re.sub(
             r"(thinking\.{3}(?: \(\d+s elapsed\))?|generating\.{3}(?: \(\d+s elapsed\))?)",
             " ",
@@ -707,3 +725,21 @@ class TurnService:
         if "mistake tool call placeholder" in lowered:
             return True
         return False
+
+    @staticmethod
+    def _normalize_ask_request(payload: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(payload.get("prompt", "")).strip()
+        key = str(payload.get("key") or "answer").strip() or "answer"
+        out: dict[str, Any] = {
+            "prompt": prompt[:800],
+            "key": key[:64],
+            "multiline": bool(payload.get("multiline", False)),
+            "required": bool(payload.get("required", True)),
+        }
+        placeholder = payload.get("placeholder")
+        if isinstance(placeholder, str) and placeholder.strip():
+            out["placeholder"] = placeholder.strip()[:200]
+        note = payload.get("note")
+        if isinstance(note, str) and note.strip():
+            out["note"] = note.strip()[:400]
+        return out

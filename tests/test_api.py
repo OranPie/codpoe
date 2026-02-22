@@ -687,6 +687,31 @@ def test_turn_handles_multiple_tool_rounds_before_final_answer(monkeypatch, tmp_
     assert payload["usage"]["estimated_tokens"]["total"] > 0
 
 
+def test_turn_returns_ask_request_when_model_emits_ask(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        return ModelReply(text='@ask {"prompt":"Which environment should I target?","key":"env"}', raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    turn_resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "deploy this app"})
+    assert turn_resp.status_code == 200
+    payload = turn_resp.json()
+    assert payload["awaiting_user_input"] is True
+    assert payload["ask_request"]["prompt"].startswith("Which environment")
+    assert payload["ask_request"]["key"] == "env"
+    assert payload["output_text"] == ""
+
+
 def test_turn_context_does_not_include_model_table(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))

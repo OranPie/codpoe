@@ -69,6 +69,7 @@ PoeCoder is a Python coding assistant runtime with:
 - Leader mode enforces scoped parallel jobs with explicit ownership and non-interference guidance per subtask.
 - `GET /tools/catalog` exposes the command/tool reference so the model can follow exact command names and args.
 - Tool `Help` provides per-tool usage guidance (`Help(tool_name)`) for complex commands.
+- Turn protocol supports model-driven clarification via `@ask {"prompt":"...","key":"..."}` with inline CLI answer input and automatic continuation.
 - Context selection is relevance-ranked + compacted by default to reduce token waste while keeping important session context.
 - Session titles are auto-derived from model conclusions after successful turns, then shown in session listings for quick resume.
 - Turn streaming now uses model chunk streaming for lower latency (`delta` events are emitted as chunks arrive).

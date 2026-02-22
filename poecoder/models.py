@@ -103,6 +103,8 @@ class TurnResult(BaseModel):
     output_text: str
     tool_events: list[dict[str, Any]] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
+    ask_request: dict[str, Any] | None = None
+    awaiting_user_input: bool = False
 
 
 class MemoryWriteRequest(BaseModel):

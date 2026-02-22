@@ -9,6 +9,7 @@ This document explains what is carried into each model turn and what is intentio
   - tool stage: runtime executes tool calls
   - final stage: model receives tool outputs as new input and produces conclusion (or more tool calls)
 - The protocol is not single-response. Multiple model passes may happen in one user turn.
+- Model can request real-time clarification with `@ask {"prompt":"...","key":"..."}`; CLI prompts user and auto-continues the same task.
 
 ## What is included in context by default
 

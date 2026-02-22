@@ -2,6 +2,9 @@
 
 This document lists model-callable tools from the runtime command catalog with compact argument/effect notes.
 
+Protocol note:
+- `@ask {"prompt":"...","key":"..."}` is a model-to-user clarification command (not a tool). CLI collects user input and continues automatically.
+
 ## File and code tools
 
 - Help

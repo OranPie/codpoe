@@ -229,6 +229,47 @@ def test_cli_stream_error_retries_nonstream_once(monkeypatch) -> None:
     assert cli.state.active_model == "assistant"
 
 
+def test_cli_backend_turn_handles_ask_without_manual_new_prompt(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    cli.state.session_id = "s1"
+    prompts: list[str] = []
+
+    async def fake_stream(async_http, payload):
+        del async_http
+        prompts.append(str(payload.get("user_prompt", "")))
+        if len(prompts) == 1:
+            cli._last_stream_final = {
+                "session_id": "s1",
+                "model": "assistant",
+                "output_text": "",
+                "tool_events": [],
+                "ask_request": {"prompt": "Which env?", "key": "env", "required": True},
+                "awaiting_user_input": True,
+            }
+        else:
+            cli._last_stream_final = {
+                "session_id": "s1",
+                "model": "assistant",
+                "output_text": "done",
+                "tool_events": [],
+            }
+        return False
+
+    monkeypatch.setattr(cli, "_stream_backend_turn", fake_stream)
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": "prod")
+
+    asyncio.run(cli._run_backend_turn("deploy app"))
+    assert len(prompts) == 2
+    assert prompts[0] == "deploy app"
+    assert "Interactive user answers" in prompts[1]
+    assert "prod" in prompts[1]
+
+
 def test_cli_stream_event_error_does_not_retry_nonstream(monkeypatch) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",

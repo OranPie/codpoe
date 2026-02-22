@@ -97,6 +97,7 @@ class PoeCoderCLI:
         self.i18n = Translator(lang=normalize_lang(lang or self.settings.lang))
         self.tool_preview_max_chars = 480
         self.tool_preview_max_lines = 10
+        self._last_stream_final: dict[str, Any] | None = None
 
     def _t(self, key: str, **kwargs: Any) -> str:
         return self.i18n.t(key, **kwargs)
@@ -1467,9 +1468,15 @@ class PoeCoderCLI:
         print(self.style.dim(self._t("msg.session_id", session_id=self.state.session_id)))
 
     async def _run_backend_turn(self, prompt: str, images: list[str] | None = None) -> None:
+        base_prompt = prompt
+        current_prompt = prompt
+        ask_history: list[dict[str, str]] = []
+        max_ask_rounds = 4
+        ask_round = 0
+
         payload = {
             "session_id": self.state.session_id,
-            "user_prompt": prompt,
+            "user_prompt": current_prompt,
             "system_message": self.state.system_message or None,
             "images": images or [],
             "thinking_level": self.state.thinking_level,
@@ -1481,20 +1488,44 @@ class PoeCoderCLI:
             },
         }
         async with httpx.AsyncClient(timeout=90.0) as async_http:
-            saw_delta = False
-            try:
-                saw_delta = await self._stream_backend_turn(async_http, payload)
-                return
-            except httpx.HTTPError as exc:
-                # If we already emitted partial assistant output, avoid replaying the request.
-                if saw_delta:
-                    print()
-                    raise
-                if not self._should_retry_stream_error(exc):
-                    raise
-                print(self.style.dim(self._t("msg.stream_retry_nonstream")))
-                payload = await self._run_backend_turn_nonstream(async_http, payload)
-                self._render_backend_nonstream_result(payload)
+            while True:
+                payload["user_prompt"] = current_prompt
+                metadata = payload.get("metadata", {})
+                if isinstance(metadata, dict):
+                    metadata["ask_history"] = list(ask_history)
+                saw_delta = False
+                final_payload: dict[str, Any] | None = None
+                self._last_stream_final = None
+                try:
+                    saw_delta = await self._stream_backend_turn(async_http, payload)
+                    final_payload = self._last_stream_final
+                except httpx.HTTPError as exc:
+                    # If we already emitted partial assistant output, avoid replaying the request.
+                    if saw_delta:
+                        print()
+                        raise
+                    if not self._should_retry_stream_error(exc):
+                        raise
+                    print(self.style.dim(self._t("msg.stream_retry_nonstream")))
+                    final_payload = await self._run_backend_turn_nonstream(async_http, payload)
+                    self._render_backend_nonstream_result(final_payload)
+
+                ask = self._extract_ask_request(final_payload)
+                if ask is None:
+                    return
+                ask_round += 1
+                if ask_round > max_ask_rounds:
+                    print(self.style.warn(self._t("msg.ask_loop_limit")))
+                    return
+                answer = self._prompt_ask_answer(ask)
+                ask_history.append(
+                    {
+                        "key": str(ask.get("key", "answer")),
+                        "prompt": str(ask.get("prompt", "")),
+                        "answer": answer,
+                    }
+                )
+                current_prompt = self._compose_prompt_with_ask_history(base_prompt, ask_history)
 
     @staticmethod
     def _should_retry_stream_error(exc: Exception) -> bool:
@@ -1512,6 +1543,7 @@ class PoeCoderCLI:
     async def _stream_backend_turn(self, async_http: httpx.AsyncClient, payload: dict[str, Any]) -> bool:
         saw_delta = False
         tool_idx = 0
+        self._last_stream_final = None
         async with async_http.stream(
             "POST",
             f"{self.state.backend_url}/turns/execute/stream",
@@ -1549,6 +1581,10 @@ class PoeCoderCLI:
                         saw_delta = True
                     print(data, end="", flush=True)
                     continue
+                if etype == "ask":
+                    if isinstance(data, dict):
+                        print(self.style.info(self._t("msg.ask_from_model", prompt=str(data.get("prompt", "")))))
+                    continue
                 if etype == "error":
                     if isinstance(data, dict):
                         code = data.get("code", "error")
@@ -1563,6 +1599,7 @@ class PoeCoderCLI:
                         rendered = str(data)
                     raise StreamEventError(rendered, retryable=retryable)
                 if etype == "final":
+                    self._last_stream_final = data if isinstance(data, dict) else {}
                     if saw_delta:
                         print()
                     self._render_backend_nonstream_result(
@@ -1604,19 +1641,124 @@ class PoeCoderCLI:
         self._render_token_breakdown(payload)
 
     async def _run_direct_turn(self, prompt: str, images: list[str] | None = None) -> None:
-        direct_context = dict(self.state.local_context)
-        direct_context["model_settings"] = {
-            "thinking_level": self.state.thinking_level,
-            "thinking_budget": self.state.thinking_budget,
-        }
-        reply = await self.direct_model_client.chat(
-            model=self.model,
-            system_message=self.state.system_message,
-            user_prompt=prompt,
-            context=direct_context,
-            images=images or [],
+        base_prompt = prompt
+        current_prompt = prompt
+        ask_history: list[dict[str, str]] = []
+        max_ask_rounds = 4
+        for _ in range(max_ask_rounds + 1):
+            direct_context = dict(self.state.local_context)
+            direct_context["model_settings"] = {
+                "thinking_level": self.state.thinking_level,
+                "thinking_budget": self.state.thinking_budget,
+            }
+            if ask_history:
+                direct_context["ask_history"] = list(ask_history)
+            reply = await self.direct_model_client.chat(
+                model=self.model,
+                system_message=self.state.system_message,
+                user_prompt=current_prompt,
+                context=direct_context,
+                images=images or [],
+            )
+            ask = self._parse_ask_from_text(reply.text)
+            if ask is None:
+                print(self.style.title(self._t("stream.assistant")) + reply.text)
+                return
+            print(self.style.info(self._t("msg.ask_from_model", prompt=str(ask.get("prompt", "")))))
+            answer = self._prompt_ask_answer(ask)
+            ask_history.append(
+                {
+                    "key": str(ask.get("key", "answer")),
+                    "prompt": str(ask.get("prompt", "")),
+                    "answer": answer,
+                }
+            )
+            current_prompt = self._compose_prompt_with_ask_history(base_prompt, ask_history)
+        print(self.style.warn(self._t("msg.ask_loop_limit")))
+
+    @staticmethod
+    def _extract_ask_request(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        ask = payload.get("ask_request")
+        if isinstance(ask, dict):
+            return ask
+        if payload.get("awaiting_user_input"):
+            # Fallback for old payloads without ask_request.
+            return {"prompt": "Please provide required input.", "key": "answer", "required": True}
+        return None
+
+    def _prompt_ask_answer(self, ask: dict[str, Any]) -> str:
+        required = bool(ask.get("required", True))
+        multiline = bool(ask.get("multiline", False))
+        if multiline:
+            print(self.style.dim(self._t("msg.ask_input_prompt").strip() + " (finish with empty line)"))
+            lines: list[str] = []
+            while True:
+                line = input("")
+                if line == "":
+                    if required and not lines:
+                        print(self.style.warn(self._t("msg.ask_empty_required")))
+                        continue
+                    break
+                lines.append(line)
+            return "\n".join(lines)
+        while True:
+            answer = input(self._t("msg.ask_input_prompt"))
+            if required and not answer.strip():
+                print(self.style.warn(self._t("msg.ask_empty_required")))
+                continue
+            return answer
+
+    @staticmethod
+    def _compose_prompt_with_ask_history(base_prompt: str, ask_history: list[dict[str, str]]) -> str:
+        compact_history = [
+            {
+                "key": str(item.get("key", "answer"))[:64],
+                "prompt": str(item.get("prompt", ""))[:400],
+                "answer": str(item.get("answer", ""))[:2000],
+            }
+            for item in ask_history[-6:]
+        ]
+        return (
+            base_prompt
+            + "\n\nInteractive user answers (from @ask):\n"
+            + json.dumps(compact_history, ensure_ascii=True)
+            + "\nContinue the same task using these answers."
         )
-        print(self.style.title(self._t("stream.assistant")) + reply.text)
+
+    @staticmethod
+    def _parse_ask_from_text(text: str) -> dict[str, Any] | None:
+        marker = "@ask"
+        lowered = (text or "").lower()
+        idx = lowered.find(marker)
+        if idx < 0:
+            return None
+        cursor = idx + len(marker)
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text):
+            return None
+        if text[cursor] == "{":
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(text[cursor:])
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                prompt = str(payload.get("prompt") or payload.get("question") or payload.get("text") or "").strip()
+                if not prompt:
+                    return None
+                return {
+                    "prompt": prompt,
+                    "key": str(payload.get("key") or payload.get("id") or "answer"),
+                    "multiline": bool(payload.get("multiline", False)),
+                    "required": bool(payload.get("required", True)),
+                }
+        end = text.find("\n", cursor)
+        line = text[cursor:] if end < 0 else text[cursor:end]
+        if not line.strip():
+            return None
+        return {"prompt": line.strip(), "key": "answer", "multiline": False, "required": True}
 
 
 def main() -> None:

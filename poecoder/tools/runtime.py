@@ -672,3 +672,55 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
         seen.add(key)
         calls.append({"name": tool_name.strip(), "args": tool_args})
     return calls
+
+
+def parse_ask_call(text: str) -> dict[str, Any] | None:
+    marker = "@ask"
+    lowered = text.lower()
+    idx = lowered.find(marker)
+    if idx < 0:
+        return None
+
+    cursor = idx + len(marker)
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    if cursor >= len(text):
+        return None
+
+    if text[cursor] == "{":
+        try:
+            payload, consumed = json.JSONDecoder().raw_decode(text[cursor:])
+        except Exception:
+            payload = None
+            consumed = 0
+        if isinstance(payload, dict):
+            prompt = str(payload.get("prompt") or payload.get("question") or payload.get("text") or "").strip()
+            if not prompt:
+                return None
+            key = str(payload.get("key") or payload.get("id") or "answer").strip() or "answer"
+            out: dict[str, Any] = {
+                "prompt": prompt,
+                "key": key,
+                "multiline": bool(payload.get("multiline", False)),
+                "required": bool(payload.get("required", True)),
+            }
+            placeholder = payload.get("placeholder")
+            if isinstance(placeholder, str) and placeholder.strip():
+                out["placeholder"] = placeholder.strip()
+            if consumed > 0:
+                remainder = text[cursor + consumed :].strip()
+                if remainder:
+                    out["note"] = remainder[:400]
+            return out
+
+    end = text.find("\n", cursor)
+    line = text[cursor:] if end < 0 else text[cursor:end]
+    prompt = line.strip()
+    if not prompt:
+        return None
+    return {
+        "prompt": prompt,
+        "key": "answer",
+        "multiline": False,
+        "required": True,
+    }

@@ -21,9 +21,11 @@ Core rules:
 
 Tool protocol:
 - Emit tool calls as exactly one line: @tool ToolName {json_args}
+- To request real-time clarification from the user, emit one line: @ask {"prompt":"...","key":"..."}.
 - Unified format rule: the only valid tool-call output is @tool ToolName {json_args}.
 - Any other tool-call style is invalid.
 - If a tool is needed, your first response must contain only @tool lines (no extra prose).
+- If user input is required before continuing, output only one @ask line (no extra prose).
 - Never emit JSON wrappers like {"tool_name":"...","args":{...}}.
 - Never emit XML, markdown code fences, or pseudo function-call blobs for tools.
 - Never emit placeholder markdown pretending to be a tool call.

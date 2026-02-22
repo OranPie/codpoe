@@ -26,6 +26,7 @@ def test_main_system_message_contains_tool_protocol() -> None:
     assert "not auto-carried into default context selection" in MAIN_SYSTEM_MESSAGE
     assert "Help {\"tool_name\":\"ToolName\"}" in MAIN_SYSTEM_MESSAGE
     assert "prefer filtered extraction" in MAIN_SYSTEM_MESSAGE
+    assert "@ask {\"prompt\":\"...\",\"key\":\"...\"}" in MAIN_SYSTEM_MESSAGE
 
 
 def test_subagent_modifier_is_included() -> None:
