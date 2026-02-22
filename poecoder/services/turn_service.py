@@ -34,69 +34,73 @@ class TurnService:
         output_text = ""
         ask_request: dict[str, Any] | None = None
 
-        phase = "tool_or_answer"
-        current_prompt = req.user_prompt
-        repair_attempt = 0
-        repeated_tool_rounds: dict[str, int] = {}
-        while True:
-            stage_context = self._with_turn_phase(context, phase, tool_events=tool_events, repair_attempt=repair_attempt)
-            reply = await self.model_client.chat(
-                model=model,
-                system_message=system_message,
-                user_prompt=current_prompt,
-                context=stage_context,
-                images=req.images,
-            )
-            self._record_usage_stage(
-                usage=usage,
-                phase=phase,
-                system_message=system_message,
-                user_prompt=current_prompt,
-                context=stage_context,
-                images=req.images,
-                output_text=reply.text,
-                raw=reply.raw,
-            )
-
-            tool_calls = parse_tool_calls(reply.text)
-            ask_call = parse_ask_call(reply.text) if not tool_calls else None
-            if ask_call is not None:
-                ask_request = self._normalize_ask_request(ask_call)
-                output_text = ""
-                break
-            if not tool_calls and self._needs_repair_output(reply.text) and repair_attempt < 1:
-                repair_attempt += 1
-                current_prompt = self._repair_prompt(current_prompt, repair_attempt)
-                continue
-
-            if not tool_calls:
-                output_text = reply.text
-                break
-            signature = self._tool_calls_signature(tool_calls)
-            if signature:
-                seen = repeated_tool_rounds.get(signature, 0) + 1
-                repeated_tool_rounds[signature] = seen
-                if seen >= 3:
-                    output_text = self._loop_guard_response()
-                    break
-
-            for call in tool_calls:
-                self._inject_default_tool_args(session.id, call)
-                try:
-                    result = await self.tools.invoke("model", call["name"], call["args"])
-                except Exception as exc:  # noqa: BLE001
-                    result = {"error": str(exc)}
-                tool_events.append({"name": call["name"], "args": call["args"], "result": result})
-                self.sessions.put_context(session.id, f"tool:{call['name']}", result, scope="turn")
-
-            forwarded_tool_events, forwarding_meta = self._prepare_tool_events_for_prompt(
-                tool_events=tool_events,
-                metadata=req.metadata,
-            )
-            usage["tool_forwarding"] = forwarding_meta
-            phase = "final_response"
+        self.tools.begin_message_scope()
+        try:
+            phase = "tool_or_answer"
+            current_prompt = req.user_prompt
             repair_attempt = 0
-            current_prompt = self._tool_followup_prompt(req.user_prompt, forwarded_tool_events, forwarding_meta)
+            repeated_tool_rounds: dict[str, int] = {}
+            while True:
+                stage_context = self._with_turn_phase(context, phase, tool_events=tool_events, repair_attempt=repair_attempt)
+                reply = await self.model_client.chat(
+                    model=model,
+                    system_message=system_message,
+                    user_prompt=current_prompt,
+                    context=stage_context,
+                    images=req.images,
+                )
+                self._record_usage_stage(
+                    usage=usage,
+                    phase=phase,
+                    system_message=system_message,
+                    user_prompt=current_prompt,
+                    context=stage_context,
+                    images=req.images,
+                    output_text=reply.text,
+                    raw=reply.raw,
+                )
+
+                tool_calls = parse_tool_calls(reply.text)
+                ask_call = parse_ask_call(reply.text) if not tool_calls else None
+                if ask_call is not None:
+                    ask_request = self._normalize_ask_request(ask_call)
+                    output_text = ""
+                    break
+                if not tool_calls and self._needs_repair_output(reply.text) and repair_attempt < 1:
+                    repair_attempt += 1
+                    current_prompt = self._repair_prompt(current_prompt, repair_attempt)
+                    continue
+
+                if not tool_calls:
+                    output_text = reply.text
+                    break
+                signature = self._tool_calls_signature(tool_calls)
+                if signature:
+                    seen = repeated_tool_rounds.get(signature, 0) + 1
+                    repeated_tool_rounds[signature] = seen
+                    if seen >= 3:
+                        output_text = self._loop_guard_response()
+                        break
+
+                for call in tool_calls:
+                    self._inject_default_tool_args(session.id, call)
+                    try:
+                        result = await self.tools.invoke("model", call["name"], call["args"])
+                    except Exception as exc:  # noqa: BLE001
+                        result = {"error": str(exc)}
+                    tool_events.append({"name": call["name"], "args": call["args"], "result": result})
+                    self.sessions.put_context(session.id, f"tool:{call['name']}", result, scope="turn")
+
+                forwarded_tool_events, forwarding_meta = self._prepare_tool_events_for_prompt(
+                    tool_events=tool_events,
+                    metadata=req.metadata,
+                )
+                usage["tool_forwarding"] = forwarding_meta
+                phase = "final_response"
+                repair_attempt = 0
+                current_prompt = self._tool_followup_prompt(req.user_prompt, forwarded_tool_events, forwarding_meta)
+        finally:
+            self.tools.end_message_scope()
 
         self._finalize_turn(session.id, decision, req.user_prompt, output_text)
         return TurnResult(
@@ -124,75 +128,79 @@ class TurnService:
         repair_attempt = 0
         repeated_tool_rounds: dict[str, int] = {}
 
-        while True:
-            stage_context = self._with_turn_phase(context, phase, tool_events=tool_events, repair_attempt=repair_attempt)
-            stage_text = ""
-            yield {"type": "status", "data": "responding"}
-            async for chunk in self.model_client.chat_stream(
-                model=model,
-                system_message=system_message,
-                user_prompt=current_prompt,
-                context=stage_context,
-                images=req.images,
-            ):
-                stage_text += chunk
+        self.tools.begin_message_scope()
+        try:
+            while True:
+                stage_context = self._with_turn_phase(context, phase, tool_events=tool_events, repair_attempt=repair_attempt)
+                stage_text = ""
+                yield {"type": "status", "data": "responding"}
+                async for chunk in self.model_client.chat_stream(
+                    model=model,
+                    system_message=system_message,
+                    user_prompt=current_prompt,
+                    context=stage_context,
+                    images=req.images,
+                ):
+                    stage_text += chunk
 
-            self._record_usage_stage(
-                usage=usage,
-                phase=phase,
-                system_message=system_message,
-                user_prompt=current_prompt,
-                context=stage_context,
-                images=req.images,
-                output_text=stage_text,
-                raw={},
-            )
+                self._record_usage_stage(
+                    usage=usage,
+                    phase=phase,
+                    system_message=system_message,
+                    user_prompt=current_prompt,
+                    context=stage_context,
+                    images=req.images,
+                    output_text=stage_text,
+                    raw={},
+                )
 
-            tool_calls = parse_tool_calls(stage_text)
-            ask_call = parse_ask_call(stage_text) if not tool_calls else None
-            if ask_call is not None:
-                ask_request = self._normalize_ask_request(ask_call)
-                yield {"type": "ask", "data": ask_request}
-                break
-            if not tool_calls and self._needs_repair_output(stage_text) and repair_attempt < 1:
-                repair_attempt += 1
-                current_prompt = self._repair_prompt(current_prompt, repair_attempt)
-                continue
-
-            if not tool_calls:
-                output_text = stage_text
-                if output_text:
-                    yield {"type": "delta", "data": output_text}
-                break
-            signature = self._tool_calls_signature(tool_calls)
-            if signature:
-                seen = repeated_tool_rounds.get(signature, 0) + 1
-                repeated_tool_rounds[signature] = seen
-                if seen >= 3:
-                    output_text = self._loop_guard_response()
-                    yield {"type": "delta", "data": output_text}
+                tool_calls = parse_tool_calls(stage_text)
+                ask_call = parse_ask_call(stage_text) if not tool_calls else None
+                if ask_call is not None:
+                    ask_request = self._normalize_ask_request(ask_call)
+                    yield {"type": "ask", "data": ask_request}
                     break
+                if not tool_calls and self._needs_repair_output(stage_text) and repair_attempt < 1:
+                    repair_attempt += 1
+                    current_prompt = self._repair_prompt(current_prompt, repair_attempt)
+                    continue
 
-            yield {"type": "status", "data": "tools"}
-            for call in tool_calls:
-                self._inject_default_tool_args(session.id, call)
-                try:
-                    result = await self.tools.invoke("model", call["name"], call["args"])
-                except Exception as exc:  # noqa: BLE001
-                    result = {"error": str(exc)}
-                tool_event = {"name": call["name"], "args": call["args"], "result": result}
-                tool_events.append(tool_event)
-                self.sessions.put_context(session.id, f"tool:{call['name']}", result, scope="turn")
-                yield {"type": "tool", "data": tool_event}
+                if not tool_calls:
+                    output_text = stage_text
+                    if output_text:
+                        yield {"type": "delta", "data": output_text}
+                    break
+                signature = self._tool_calls_signature(tool_calls)
+                if signature:
+                    seen = repeated_tool_rounds.get(signature, 0) + 1
+                    repeated_tool_rounds[signature] = seen
+                    if seen >= 3:
+                        output_text = self._loop_guard_response()
+                        yield {"type": "delta", "data": output_text}
+                        break
 
-            forwarded_tool_events, forwarding_meta = self._prepare_tool_events_for_prompt(
-                tool_events=tool_events,
-                metadata=req.metadata,
-            )
-            usage["tool_forwarding"] = forwarding_meta
-            phase = "final_response"
-            repair_attempt = 0
-            current_prompt = self._tool_followup_prompt(req.user_prompt, forwarded_tool_events, forwarding_meta)
+                yield {"type": "status", "data": "tools"}
+                for call in tool_calls:
+                    self._inject_default_tool_args(session.id, call)
+                    try:
+                        result = await self.tools.invoke("model", call["name"], call["args"])
+                    except Exception as exc:  # noqa: BLE001
+                        result = {"error": str(exc)}
+                    tool_event = {"name": call["name"], "args": call["args"], "result": result}
+                    tool_events.append(tool_event)
+                    self.sessions.put_context(session.id, f"tool:{call['name']}", result, scope="turn")
+                    yield {"type": "tool", "data": tool_event}
+
+                forwarded_tool_events, forwarding_meta = self._prepare_tool_events_for_prompt(
+                    tool_events=tool_events,
+                    metadata=req.metadata,
+                )
+                usage["tool_forwarding"] = forwarding_meta
+                phase = "final_response"
+                repair_attempt = 0
+                current_prompt = self._tool_followup_prompt(req.user_prompt, forwarded_tool_events, forwarding_meta)
+        finally:
+            self.tools.end_message_scope()
 
         self._finalize_turn(session.id, decision, req.user_prompt, output_text)
 
@@ -215,6 +223,11 @@ class TurnService:
             previous_user_message = str(previous_user_message)
         if len(previous_user_message) > 4000:
             previous_user_message = previous_user_message[:3997] + "..."
+        previous_turn_conclusion = self.sessions.get_context(session.id, ["last_turn_conclusion"]).get("last_turn_conclusion", "")
+        if not isinstance(previous_turn_conclusion, str):
+            previous_turn_conclusion = str(previous_turn_conclusion)
+        if len(previous_turn_conclusion) > 1000:
+            previous_turn_conclusion = previous_turn_conclusion[:997] + "..."
 
         selected_context, context_diagnostics = self.sessions.select_context_for_prompt(
             session_id=session.id,
@@ -231,6 +244,7 @@ class TurnService:
             "selected_context": selected_context,
             "conversation": {
                 "previous_user_message": previous_user_message,
+                "previous_turn_conclusion": previous_turn_conclusion,
             },
             "memory": memory_context,
             "context_diagnostics": context_diagnostics,
@@ -306,13 +320,28 @@ class TurnService:
             args["parent_session_id"] = session_id
         if name == "RunShell" and "session_id" not in args:
             args["session_id"] = session_id
+        if name == "RunShell" and "timeout_s" not in args:
+            args["timeout_s"] = 10
 
     def _finalize_turn(self, session_id: str, decision: Any, user_prompt: str, output_text: str) -> None:
         self.sessions.put_context(session_id, "router_decision", decision.model_dump(mode="json"), scope="turn")
         self.sessions.put_context(session_id, "last_user_prompt", user_prompt, scope="pinned")
         self.sessions.put_context(session_id, "last_model_output", output_text, scope="turn")
+        turn_conclusion = self._conclude_for_next_turn(output_text)
+        self.sessions.put_context(session_id, "last_turn_conclusion", turn_conclusion, scope="pinned")
         self.sessions.maybe_update_title_from_turn(session_id, user_prompt, output_text)
         self.sessions.touch(session_id)
+
+    @staticmethod
+    def _conclude_for_next_turn(output_text: str, max_chars: int = 1000) -> str:
+        text = re.sub(r"\s+", " ", output_text or "").strip()
+        if not text:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 3:
+            return text[:max_chars]
+        return text[: max_chars - 3].rstrip() + "..."
 
     def _load_memory(self, session_id: str, project_id: str, query: str) -> dict[str, list[dict[str, Any]]]:
         session_entries = self.memories.read(

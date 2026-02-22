@@ -23,10 +23,12 @@ def test_main_system_message_contains_tool_protocol() -> None:
     assert "PoeCoder architecture flow" in MAIN_SYSTEM_MESSAGE
     assert "\"exit\", \"quit\", \"close session\"" in MAIN_SYSTEM_MESSAGE
     assert "previous_user_message" in MAIN_SYSTEM_MESSAGE
+    assert "previous_turn_conclusion" in MAIN_SYSTEM_MESSAGE
     assert "not auto-carried into default context selection" in MAIN_SYSTEM_MESSAGE
     assert "Help {\"tool_name\":\"ToolName\"}" in MAIN_SYSTEM_MESSAGE
     assert "prefer filtered extraction" in MAIN_SYSTEM_MESSAGE
     assert "@ask {\"prompt\":\"...\",\"key\":\"...\"}" in MAIN_SYSTEM_MESSAGE
+    assert "RunShell returns a terminal_id" in MAIN_SYSTEM_MESSAGE
 
 
 def test_subagent_modifier_is_included() -> None:

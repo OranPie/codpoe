@@ -193,7 +193,7 @@ class ShellRunRequest(BaseModel):
     command: str
     danger_level: DangerLevel = 0
     cwd: str | None = None
-    timeout_s: int = 60
+    timeout_s: int = 10
 
 
 class ShellRunResponse(BaseModel):

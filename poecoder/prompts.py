@@ -46,6 +46,11 @@ Context and memory discipline:
 - Treat selected_context as hints, not full truth; use context_diagnostics for coverage.
 - context.conversation.previous_user_message is included by default as carry-over.
 - Tool results and previous final assistant output are not auto-carried into default context selection.
+- Use Output for mid-turn text shaping (slice_lines/match_lines/truncate) and Write to persist shaped output.
+- RunShell returns a terminal_id for this message scope; it can be reused via source=terminal in Output/Write.
+- If content must persist across turns, explicitly store it with context/memory/wiki tools.
+- conversation.previous_turn_conclusion carries up to 1000 chars from the last turn by default.
+- Context that is not selected/defaulted is not automatically passed to the model.
 - Record durable findings compactly; avoid noisy bulk dumps.
 - Use record-and-on-demand: store stable summaries, re-read volatile details when needed.
 - In large or continuous sessions, proactively keep context, memory, and wiki compact and updated.

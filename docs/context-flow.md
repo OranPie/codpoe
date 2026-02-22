@@ -16,6 +16,7 @@ This document explains what is carried into each model turn and what is intentio
 - `session`: current session settings and mode
 - `selected_context`: auto-ranked compact context entries
 - `conversation.previous_user_message`: latest prior user message carry-over
+- `conversation.previous_turn_conclusion`: compact carry-over conclusion (up to 1000 chars from prior turn)
 - `memory`: session/project/global/query memory hits
 - `context_diagnostics`: selected vs dropped context metadata
 - `command_catalog`: available tool names, args, effects
@@ -26,6 +27,17 @@ This document explains what is carried into each model turn and what is intentio
 - Previous final assistant output (`last_model_output`) is excluded from default auto context selection.
 - Stored tool payload entries (`tool:*`) are excluded from default auto context selection.
 - These can still be loaded on demand using explicit keys or targeted tool calls.
+- If content must persist, store it explicitly (context/memory/wiki). Otherwise it is not guaranteed to be included.
+
+## Mid-turn text shaping
+
+- `RunShell` emits `terminal_id` values that are valid only within the same message scope.
+- `Output` can load source data from `text|context|memory|terminal` and apply operations:
+  - line slice (`slice_lines`)
+  - pattern line filter (`match_lines`)
+  - char slice (`slice_chars`)
+  - truncation (`truncate`)
+- `Write` supports the same source/operation args as `Output`, then writes the transformed text into files.
 
 ## Tool result forwarding modes
 

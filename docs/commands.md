@@ -31,9 +31,15 @@ Protocol note:
 - WriteRaw
   - args: `file,line,content,append?`
   - effect: insert/append text at target file location
+- Write
+  - args: `file,line?,append?,source?,text?,session_id?,key?,terminal_id?/id?,scope?/query?/project_id?/tags_any?/min_priority?/include_content?/max_content_chars?/limit?,operation?,start?/end?/start_line?/end_line?/pattern?/ignore_case?/max_chars?/max_lines?`
+  - effect: write transformed source content (text/context/memory/terminal) to file
 - WriteReplace
   - args: `pattern,replacement,location,max_changes`
   - effect: regex replace in scoped files
+- Output
+  - args: `source,text?,session_id?,key?,terminal_id?/id?,scope?/query?/project_id?/tags_any?/min_priority?/include_content?/max_content_chars?/limit?,operation?,start?/end?/start_line?/end_line?/pattern?/ignore_case?/max_chars?/max_lines?`
+  - effect: read and transform text from text/context/memory/terminal source for mid-turn processing
 
 ## Web tools
 
@@ -150,7 +156,7 @@ Protocol note:
   - effect: cancel leader run
 - RunShell
   - args: `session_id,command,danger_level,cwd?,timeout_s?`
-  - effect: execute shell command through policy gate
+  - effect: execute shell command through policy gate; returns ephemeral `terminal_id` for same-message Output/Write reads
 - Exit
   - args: `reason?`
   - effect: signal CLI/session exit

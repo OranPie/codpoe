@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +54,7 @@ class ToolRuntime:
     task_service: "TaskService | None" = None
     leader_service: "LeaderService | None" = None
     cwd: str = "."
+    _terminal_outputs: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
 
     def command_catalog(self) -> list[dict[str, Any]]:
         return [
@@ -63,7 +66,9 @@ class ToolRuntime:
             {"name": "ListFile", "args": "path?,pattern?,recursive?,include_dirs?,limit?", "effect": "List files under current/target directory"},
             {"name": "ChangeWorkDir", "args": "path", "effect": "Change tool working directory"},
             {"name": "WriteRaw", "args": "file,line,content,append?", "effect": "Insert/append raw text in file"},
+            {"name": "Write", "args": "file,line?,append?,source?,text?,session_id?,key?,terminal_id?/id?,scope?/query?/project_id?/tags_any?/min_priority?/include_content?/max_content_chars?/limit?,operation?,start?/end?/start_line?/end_line?/pattern?/ignore_case?/max_chars?/max_lines?", "effect": "Write transformed content from text/context/memory/terminal source to file"},
             {"name": "WriteReplace", "args": "pattern,replacement,location,max_changes", "effect": "Regex replace in files"},
+            {"name": "Output", "args": "source,text?,session_id?,key?,terminal_id?/id?,scope?/query?/project_id?/tags_any?/min_priority?/include_content?/max_content_chars?/limit?,operation?,start?/end?/start_line?/end_line?/pattern?/ignore_case?/max_chars?/max_lines?", "effect": "Read and transform text from text/context/memory/terminal source"},
             {"name": "GetWebRaw", "args": "url,timeout_s,max_chars,headers?,selector?,regex?,max_matches?", "effect": "Fetch web content with optional selector/regex filtering"},
             {"name": "GetWeb", "args": "url,focus?,timeout_s,max_chars,selector?,regex?,max_matches?,download_if_large?,download_folder?", "effect": "Fetch summarized web content with optional filtering/local-download fallback"},
             {"name": "GetWebFile", "args": "url,save_as?,folder,overwrite,timeout_s,max_bytes", "effect": "Download file from web"},
@@ -152,11 +157,15 @@ class ToolRuntime:
             write_args = dict(args)
             write_args["file"] = self._resolve_tool_path(str(write_args["file"]))
             return self.code_tools.write_raw(**write_args)
+        if name == "Write":
+            return self._write_from_source(**args)
         if name == "WriteReplace":
             write_args = dict(args)
             location = str(write_args.get("location", "."))
             write_args["location"] = self._resolve_tool_path(location)
             return self.code_tools.write_replace(**write_args)
+        if name == "Output":
+            return self._output_from_source(**args)
         if name == "Search":
             search_args = dict(args)
             root = str(search_args.get("root", "."))
@@ -320,7 +329,17 @@ class ToolRuntime:
                 run_args["cwd"] = str(self._absolute_cwd())
             else:
                 run_args["cwd"] = str(self._absolute_cwd(str(cwd)))
-            return (await self.shell_service.run(**run_args)).model_dump(mode="json")
+            if "timeout_s" not in run_args:
+                run_args["timeout_s"] = 10
+            run_result = (await self.shell_service.run(**run_args)).model_dump(mode="json")
+            terminal_id = self._register_terminal_output(
+                command=str(run_args.get("command", "")),
+                result=run_result,
+            )
+            run_result["terminal_id"] = terminal_id
+            run_result["source"] = "terminal"
+            run_result["expires"] = "message_end"
+            return run_result
 
         if name == "Exit":
             return {"exit": True, "reason": str(args.get("reason", "requested"))}
@@ -386,6 +405,256 @@ class ToolRuntime:
         )
         return {"name": name, "expires_at": expires_at.isoformat()}
 
+    def begin_message_scope(self) -> None:
+        self._terminal_outputs.clear()
+
+    def end_message_scope(self) -> None:
+        self._terminal_outputs.clear()
+
+    def _register_terminal_output(self, command: str, result: dict[str, Any]) -> str:
+        output_id = f"term_{uuid.uuid4().hex[:12]}"
+        self._terminal_outputs[output_id] = {
+            "command": command,
+            "stdout": str(result.get("stdout", "")),
+            "stderr": str(result.get("stderr", "")),
+            "exit_code": result.get("exit_code"),
+            "allowed": bool(result.get("allowed", False)),
+            "policy_reason": str(result.get("policy_reason", "")),
+        }
+        return output_id
+
+    def _terminal_output(self, output_id: str) -> dict[str, Any]:
+        hit = self._terminal_outputs.get(output_id)
+        if hit is None:
+            raise ValueError(f"terminal output id expired or not found: {output_id}")
+        return hit
+
+    def _resolve_output_text(
+        self,
+        *,
+        source: str = "text",
+        text: str = "",
+        session_id: str | None = None,
+        key: str | None = None,
+        terminal_id: str | None = None,
+        id: str | None = None,
+        scope: str | None = None,
+        query: str | None = None,
+        project_id: str | None = None,
+        tags_any: list[str] | None = None,
+        min_priority: int | None = None,
+        include_content: bool = True,
+        max_content_chars: int | None = None,
+        limit: int = 20,
+    ) -> tuple[str, str]:
+        source_name = str(source or "text").strip().lower()
+        if source_name == "text":
+            return str(text or ""), "text:inline"
+        if source_name == "terminal":
+            lookup_id = str(terminal_id or id or "").strip()
+            if not lookup_id:
+                raise ValueError("terminal source requires terminal_id or id")
+            item = self._terminal_output(lookup_id)
+            payload = {
+                "command": item.get("command", ""),
+                "exit_code": item.get("exit_code"),
+                "stdout": item.get("stdout", ""),
+                "stderr": item.get("stderr", ""),
+                "policy_reason": item.get("policy_reason", ""),
+            }
+            return json.dumps(payload, ensure_ascii=False, indent=2), f"terminal:{lookup_id}"
+        if source_name == "context":
+            sid = str(session_id or "").strip()
+            if not sid:
+                raise ValueError("context source requires session_id")
+            if key:
+                rows = self.sessions.get_context(sid, [key])
+                if key not in rows:
+                    raise ValueError(f"context key not found: {key}")
+                return json.dumps(rows[key], ensure_ascii=False, indent=2), f"context:{key}"
+            rows = self.sessions.get_context(sid)
+            return json.dumps(rows, ensure_ascii=False, indent=2), "context:*"
+        if source_name == "memory":
+            read_req = MemoryReadRequest(
+                query=query,
+                scope=scope,  # type: ignore[arg-type]
+                session_id=session_id,
+                project_id=project_id,
+                tags_any=tags_any or [],
+                min_priority=min_priority if min_priority is not None else 0,
+                include_content=bool(include_content),
+                max_content_chars=max_content_chars,
+                limit=max(1, min(200, int(limit))),
+            )
+            entries = self.memory_service.read(read_req)
+            lines: list[str] = []
+            for entry in entries:
+                tags = ",".join(entry.tags or [])
+                base = f"[{entry.id}] scope={entry.scope} priority={entry.priority} tags={tags}"
+                if include_content:
+                    content = (entry.content or "").replace("\n", "\\n")
+                    lines.append(f"{base} content={content}")
+                else:
+                    lines.append(base)
+            return "\n".join(lines), f"memory:{len(entries)}"
+        raise ValueError("Output source must be one of: text|memory|context|terminal")
+
+    @staticmethod
+    def _truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
+        if max_chars <= 0:
+            return "", bool(value)
+        if len(value) <= max_chars:
+            return value, False
+        if max_chars <= 3:
+            return value[:max_chars], True
+        return value[: max_chars - 3] + "...", True
+
+    def _apply_output_operation(
+        self,
+        text: str,
+        *,
+        operation: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        pattern: str | None = None,
+        ignore_case: bool = False,
+        max_chars: int | None = None,
+        max_lines: int | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        op = str(operation or "none").strip().lower()
+        out = text
+        op_meta: dict[str, Any] = {"operation": op}
+
+        if op in {"slice", "slice_chars"}:
+            start_idx = int(start or 0)
+            end_idx = int(end) if end is not None else None
+            out = out[start_idx:end_idx]
+            op_meta["slice"] = {"start": start_idx, "end": end_idx}
+        elif op in {"slice_lines", "line_slice"}:
+            lines = out.splitlines()
+            s_line = max(1, int(start_line or 1))
+            e_line = int(end_line) if end_line is not None else len(lines)
+            s_idx = max(0, min(len(lines), s_line - 1))
+            e_idx = max(s_idx, min(len(lines), e_line))
+            out = "\n".join(lines[s_idx:e_idx])
+            op_meta["slice_lines"] = {"start_line": s_line, "end_line": e_line}
+        elif op in {"match_lines", "grep_lines", "pattern"}:
+            regex_text = str(pattern or "")
+            if not regex_text:
+                raise ValueError("match_lines operation requires pattern")
+            flags = re.IGNORECASE if ignore_case else 0
+            regex = re.compile(regex_text, flags)
+            out = "\n".join(line for line in out.splitlines() if regex.search(line))
+            op_meta["match_lines"] = {"pattern": regex_text, "ignore_case": bool(ignore_case)}
+        elif op in {"truncate", "trim"}:
+            cap = int(max_chars or 1000)
+            out, truncated = self._truncate_text(out, cap)
+            op_meta["truncate"] = {"max_chars": cap, "truncated": truncated}
+        elif op not in {"none", ""}:
+            raise ValueError("unsupported operation")
+
+        was_truncated = False
+        if max_lines is not None:
+            limit_lines = max(1, int(max_lines))
+            lines = out.splitlines()
+            if len(lines) > limit_lines:
+                out = "\n".join(lines[:limit_lines]) + "\n..."
+                was_truncated = True
+        if max_chars is not None and op not in {"truncate", "trim"}:
+            out, capped = self._truncate_text(out, max(1, int(max_chars)))
+            was_truncated = was_truncated or capped
+
+        op_meta["max_chars"] = max_chars
+        op_meta["max_lines"] = max_lines
+        op_meta["truncated"] = was_truncated or bool(op_meta.get("truncate", {}).get("truncated"))
+        return out, op_meta
+
+    def _output_from_source(
+        self,
+        source: str = "text",
+        text: str = "",
+        session_id: str | None = None,
+        key: str | None = None,
+        terminal_id: str | None = None,
+        id: str | None = None,
+        scope: str | None = None,
+        query: str | None = None,
+        project_id: str | None = None,
+        tags_any: list[str] | None = None,
+        min_priority: int | None = None,
+        include_content: bool = True,
+        max_content_chars: int | None = None,
+        limit: int = 20,
+        operation: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        pattern: str | None = None,
+        ignore_case: bool = False,
+        max_chars: int | None = None,
+        max_lines: int | None = None,
+    ) -> dict[str, Any]:
+        raw_text, source_id = self._resolve_output_text(
+            source=source,
+            text=text,
+            session_id=session_id,
+            key=key,
+            terminal_id=terminal_id,
+            id=id,
+            scope=scope,
+            query=query,
+            project_id=project_id,
+            tags_any=tags_any,
+            min_priority=min_priority,
+            include_content=include_content,
+            max_content_chars=max_content_chars,
+            limit=limit,
+        )
+        transformed, op_meta = self._apply_output_operation(
+            raw_text,
+            operation=operation,
+            start=start,
+            end=end,
+            start_line=start_line,
+            end_line=end_line,
+            pattern=pattern,
+            ignore_case=ignore_case,
+            max_chars=max_chars,
+            max_lines=max_lines,
+        )
+        return {
+            "source": str(source or "text"),
+            "source_id": source_id,
+            "text": transformed,
+            "chars": len(transformed),
+            "lines": len(transformed.splitlines()) if transformed else 0,
+            "operation": op_meta,
+        }
+
+    def _write_from_source(
+        self,
+        file: str,
+        line: int = 1,
+        append: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        output = self._output_from_source(**kwargs)
+        target = self._resolve_tool_path(file)
+        text = str(output.get("text", ""))
+        written = self.code_tools.write_raw(
+            file=target,
+            line=int(line),
+            content=text,
+            append=bool(append),
+        )
+        written["source"] = output.get("source")
+        written["source_id"] = output.get("source_id")
+        written["chars_written"] = len(text)
+        return written
+
     def _tool_help(self, tool_name: Any = None, query: Any = None) -> dict[str, Any]:
         catalog = self.command_catalog()
         indexed = {str(item.get("name", "")).lower(): item for item in catalog}
@@ -405,6 +674,8 @@ class ToolRuntime:
                 "tool_count": len(names),
                 "tools": names,
                 "complex_tools": [
+                    "Output",
+                    "Write",
                     "WriteReplace",
                     "ReadRecursive",
                     "RunShell",
@@ -474,6 +745,24 @@ class ToolRuntime:
                 ],
                 "example": "@tool WriteReplace {\"pattern\":\"foo\",\"replacement\":\"bar\",\"location\":\"poecoder/cli.py\",\"max_changes\":2}",
                 "related": ["Search", "ReadRaw", "WriteRaw"],
+            },
+            "Output": {
+                "guidance": [
+                    "Use source=text|context|memory|terminal.",
+                    "Use operation=slice_lines|match_lines|truncate|slice_chars to reduce payload size.",
+                    "For terminal source, pass terminal_id from a recent RunShell result in the same message.",
+                ],
+                "example": "@tool Output {\"source\":\"terminal\",\"terminal_id\":\"term_xxx\",\"operation\":\"match_lines\",\"pattern\":\"ERROR\",\"max_lines\":20}",
+                "related": ["RunShell", "Write", "ReadMemory"],
+            },
+            "Write": {
+                "guidance": [
+                    "Write accepts the same source/operation args as Output and then writes to file.",
+                    "For terminal source, pass terminal_id from RunShell and keep write scope explicit.",
+                    "Use append=true for log-like appends; otherwise line insertion is used.",
+                ],
+                "example": "@tool Write {\"file\":\"notes.txt\",\"append\":true,\"source\":\"terminal\",\"terminal_id\":\"term_xxx\",\"operation\":\"truncate\",\"max_chars\":400}",
+                "related": ["Output", "WriteRaw", "RunShell"],
             },
             "ReadRecursive": {
                 "guidance": [

@@ -76,8 +76,58 @@ class StreamEventError(httpx.HTTPError):
 
 
 class PoeCoderCLI:
+    _COMMANDS: tuple[str, ...] = (
+        "/help",
+        "/quit",
+        "/login",
+        "/loginopenai",
+        "/secretssave",
+        "/secretsload",
+        "/setbaseuri",
+        "/setbaseurl",
+        "/baseuri",
+        "/sessions",
+        "/resume",
+        "/system",
+        "/mode",
+        "/plan",
+        "/thinking",
+        "/thinkdetails",
+        "/toolresult",
+        "/commandpolicy",
+        "/lang",
+        "/image",
+        "/images",
+        "/clearimages",
+        "/listmodels",
+        "/models",
+        "/apistatus",
+        "/modeltable",
+        "/changemodel",
+        "/model",
+        "/balance",
+        "/context",
+        "/memory",
+        "/wiki",
+        "/review",
+        "/reviewsettings",
+        "/subagent",
+        "/bgturn",
+        "/bgsubagent",
+        "/leader",
+        "/leaderstatus",
+        "/leaderjobs",
+        "/leaderwait",
+        "/leadercancel",
+        "/tasks",
+        "/task",
+        "/readtaskoutput",
+        "/taskoutput",
+        "/canceltask",
+        "/shell",
+    )
+
     def __init__(self, backend_url: str, direct: bool, model: str | None, lang: str | None) -> None:
-        self._configure_line_editing()
         self.settings = get_settings()
         self.direct = direct
         self.model = model or self.settings.default_large_model
@@ -98,6 +148,12 @@ class PoeCoderCLI:
         self.tool_preview_max_chars = 480
         self.tool_preview_max_lines = 10
         self._last_stream_final: dict[str, Any] | None = None
+        self._completion_models: list[str] = self._seed_model_completions()
+        self._completion_session_ids: set[str] = set()
+        self._completion_task_ids: set[str] = set()
+        self._completion_run_ids: set[str] = set()
+        self._completion_subagent_ids: set[str] = set()
+        self._configure_line_editing()
 
     def _t(self, key: str, **kwargs: Any) -> str:
         return self.i18n.t(key, **kwargs)
@@ -144,6 +200,7 @@ class PoeCoderCLI:
 
     def _render_models(self, models: list[str], query: str = "", total_count: int | None = None) -> None:
         current = self.model if self.direct else (self.state.active_model or "auto")
+        self._update_model_completions(models)
         print(self.style.info(self._t("msg.models_header", count=len(models))))
         if query:
             base = total_count if isinstance(total_count, int) and total_count >= 0 else len(models)
@@ -233,6 +290,10 @@ class PoeCoderCLI:
             ],
             rows,
         )
+        for item in sessions:
+            sid = str(item.get("id", "")).strip()
+            if sid:
+                self._completion_session_ids.add(sid)
 
     def _apply_session_snapshot(self, data: dict[str, Any]) -> None:
         self.state.session_id = data.get("id")
@@ -249,6 +310,11 @@ class PoeCoderCLI:
         self.state.encourage_model_command_create = bool(
             data.get("encourage_model_command_create", self.state.encourage_model_command_create)
         )
+        if isinstance(self.state.session_id, str) and self.state.session_id.strip():
+            self._completion_session_ids.add(self.state.session_id.strip())
+        active = str(self.state.active_model or "").strip()
+        if active:
+            self._update_model_completions([active])
 
     def _render_task_list(self, tasks: list[dict[str, Any]]) -> None:
         print(self.style.info(self._t("msg.task_list_header", count=len(tasks))))
@@ -278,8 +344,15 @@ class PoeCoderCLI:
             ],
             rows,
         )
+        for task in tasks:
+            task_id = str(task.get("id", "")).strip()
+            if task_id:
+                self._completion_task_ids.add(task_id)
 
     def _render_task_detail(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("id", "")).strip()
+        if task_id:
+            self._completion_task_ids.add(task_id)
         print(self.style.info(self._t("msg.task_detail", id=task.get("id", ""))))
         rows = [
             [self._t("table.type"), str(task.get("task_type", "-"))],
@@ -302,6 +375,9 @@ class PoeCoderCLI:
             print(self.style.error(f"{self._t('table.error')}: {error}"))
 
     def _render_task_output(self, payload: dict[str, Any]) -> None:
+        task_id = str(payload.get("task_id", "")).strip()
+        if task_id:
+            self._completion_task_ids.add(task_id)
         print(
             self.style.info(
                 self._t(
@@ -320,6 +396,9 @@ class PoeCoderCLI:
             print(self.style.dim(self._t("msg.task_output_pending")))
 
     def _render_leader_run(self, run: dict[str, Any]) -> None:
+        run_id = str(run.get("id", "")).strip()
+        if run_id:
+            self._completion_run_ids.add(run_id)
         print(self.style.info(self._t("msg.leader_run_header", id=run.get("id", ""))))
         rows = [
             [self._t("table.state"), str(run.get("state", "-"))],
@@ -384,13 +463,124 @@ class PoeCoderCLI:
         except (EOFError, KeyboardInterrupt):
             return ""
 
+    def _seed_model_completions(self) -> list[str]:
+        names: list[str] = []
+        for item in [
+            self.model,
+            self.settings.default_small_model,
+            self.settings.default_large_model,
+            self.state.active_model or "",
+            *self.settings.supported_models,
+            *self.settings.openai_models,
+        ]:
+            name = str(item or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return sorted(names)
+
+    def _update_model_completions(self, models: list[str]) -> None:
+        for model in models:
+            name = str(model or "").strip()
+            if not name:
+                continue
+            if name not in self._completion_models:
+                self._completion_models.append(name)
+        self._completion_models.sort()
+
     @staticmethod
-    def _configure_line_editing() -> None:
+    def _safe_split_for_completion(text: str) -> list[str]:
+        if not text.strip():
+            return []
+        try:
+            return shlex.split(text)
+        except Exception:
+            return text.strip().split()
+
+    def _completion_candidates(self, buffer: str, text: str, begidx: int) -> list[str]:
+        prefix = (text or "").lower()
+        before = buffer[:begidx]
+        tokens = self._safe_split_for_completion(before)
+        at_new_arg = bool(before.endswith(" "))
+
+        if not tokens:
+            return [cmd for cmd in self._COMMANDS if cmd.startswith(prefix)]
+
+        cmd = tokens[0].lower()
+        arg_index = len(tokens) if at_new_arg else max(len(tokens) - 1, 0)
+
+        choices: list[str] = []
+        if arg_index == 0:
+            choices = list(self._COMMANDS)
+        elif cmd in {"/mode"} and arg_index == 1:
+            choices = ["coding", "chat", "planning", "leader"]
+        elif cmd in {"/lang"} and arg_index == 1:
+            choices = supported_langs()
+        elif cmd in {"/thinking"} and arg_index == 1:
+            choices = ["quick", "balanced", "deep"]
+        elif cmd in {"/thinkdetails"} and arg_index == 1:
+            choices = ["on", "off"]
+        elif cmd in {"/toolresult"} and arg_index == 1:
+            choices = ["auto", "compact", "full"]
+        elif cmd in {"/commandpolicy"} and arg_index == 1:
+            choices = ["allow", "deny"]
+        elif cmd in {"/commandpolicy"} and arg_index == 2:
+            choices = ["encourage", "noencourage"]
+        elif cmd in {"/setbaseuri", "/setbaseurl", "/baseuri"} and arg_index == 1:
+            choices = ["poe", "openai"]
+        elif cmd in {"/setbaseuri", "/setbaseurl", "/baseuri"} and arg_index == 2:
+            choices = ["https://api.poe.com/bot/", "https://api.openai.com/v1"]
+        elif cmd in {"/changemodel", "/model"} and arg_index == 1:
+            choices = list(self._completion_models)
+        elif cmd in {"/listmodels", "/models"} and arg_index >= 1:
+            # Query completion: suggest model names that match current fragment.
+            choices = list(self._completion_models)
+        elif cmd in {"/subagent", "/bgsubagent"} and arg_index == 1:
+            choices = list(self._completion_models)
+        elif cmd in {"/subagent", "/bgsubagent"} and arg_index == 2:
+            choices = ["readonly", "standard", "privileged"]
+        elif cmd in {"/resume"} and arg_index == 1:
+            choices = sorted(self._completion_session_ids)
+        elif cmd in {"/task", "/readtaskoutput", "/taskoutput", "/canceltask"} and arg_index == 1:
+            choices = sorted(self._completion_task_ids)
+        elif cmd in {"/tasks"} and arg_index == 1:
+            choices = ["pending", "running", "succeeded", "failed", "cancelled"]
+        elif cmd in {"/leaderstatus", "/leaderjobs", "/leaderwait", "/leadercancel"} and arg_index == 1:
+            choices = sorted(self._completion_run_ids)
+        elif cmd in {"/reviewsettings"} and arg_index == 1:
+            choices = list(self._completion_models)
+        elif cmd in {"/reviewsettings"} and arg_index == 2:
+            choices = ["quick", "balanced", "deep"]
+
+        out: list[str] = []
+        for item in choices:
+            candidate = str(item)
+            if not candidate:
+                continue
+            if candidate.lower().startswith(prefix):
+                out.append(candidate)
+        return sorted(dict.fromkeys(out))
+
+    def _readline_completer(self, text: str, state: int) -> str | None:
+        try:
+            import readline  # noqa: PLC0415
+        except Exception:
+            return None
+        buffer = readline.get_line_buffer()
+        begidx = readline.get_begidx()
+        candidates = self._completion_candidates(buffer, text, begidx)
+        if state < len(candidates):
+            return candidates[state]
+        return None
+
+    def _configure_line_editing(self) -> None:
         try:
             import readline  # noqa: PLC0415
 
             readline.parse_and_bind(r'"\C-h": backward-delete-char')
             readline.parse_and_bind(r'"\C-?": backward-delete-char')
+            readline.parse_and_bind("tab: complete")
+            readline.set_completer_delims(" \t\n")
+            readline.set_completer(self._readline_completer)
         except Exception:
             # Best effort only; some platforms don't provide readline.
             return
@@ -1122,6 +1312,7 @@ class PoeCoderCLI:
             target = parts[1]
             if self.direct:
                 self.model = target
+                self._update_model_completions([target])
                 print(self.style.ok(self._t("msg.direct_model_set", model=self.model)))
                 return False
             resp = self.http.post(
@@ -1131,6 +1322,7 @@ class PoeCoderCLI:
             resp.raise_for_status()
             updated = resp.json()
             self.state.active_model = updated.get("active_model")
+            self._update_model_completions([self.state.active_model or target])
             print(self.style.ok(self._t("msg.session_model_changed", model=updated["active_model"])))
             return False
         if cmd == "/balance":
@@ -1226,6 +1418,9 @@ class PoeCoderCLI:
             )
             resp.raise_for_status()
             data = resp.json()
+            subagent_id = str(data.get("id", "")).strip()
+            if subagent_id:
+                self._completion_subagent_ids.add(subagent_id)
             print(self.style.ok(self._t("msg.subagent_started", id=data["id"])))
             return False
         if cmd == "/review" and len(parts) >= 2:
@@ -1296,6 +1491,9 @@ class PoeCoderCLI:
             )
             resp.raise_for_status()
             task = resp.json()
+            task_id = str(task.get("id", "")).strip()
+            if task_id:
+                self._completion_task_ids.add(task_id)
             print(self.style.ok(self._t("msg.task_started", id=task["id"])))
             return False
         if cmd == "/bgsubagent" and len(parts) >= 4:
@@ -1319,6 +1517,9 @@ class PoeCoderCLI:
             )
             resp.raise_for_status()
             task = resp.json()
+            task_id = str(task.get("id", "")).strip()
+            if task_id:
+                self._completion_task_ids.add(task_id)
             print(self.style.ok(self._t("msg.task_started", id=task["id"])))
             return False
         if cmd == "/leader" and len(parts) >= 2:
@@ -1337,6 +1538,9 @@ class PoeCoderCLI:
             )
             resp.raise_for_status()
             run = resp.json()
+            run_id = str(run.get("id", "")).strip()
+            if run_id:
+                self._completion_run_ids.add(run_id)
             print(self.style.ok(self._t("msg.leader_started", id=run.get("id", ""))))
             self._render_leader_run(run)
             return False
@@ -1437,7 +1641,7 @@ class PoeCoderCLI:
                     "session_id": self.state.session_id,
                     "command": command,
                     "danger_level": danger,
-                    "timeout_s": 120,
+                    "timeout_s": 10,
                 },
             )
             resp.raise_for_status()

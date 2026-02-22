@@ -58,6 +58,10 @@ PoeCoder is a Python coding assistant runtime with:
 
 - Base main/subagent system prompts live in `poecoder/prompts.py`.
 - `StartSubAgent` supports `system_message_modifier` so the main model can shape subagent behavior safely.
+- New tool pair: `Output` + `Write` for mid-turn text processing from `text/context/memory/terminal` sources.
+- `RunShell` now returns ephemeral `terminal_id` values that can be consumed by `Output`/`Write` in the same turn.
+- A compact `previous_turn_conclusion` (up to 1000 chars) is carried into the next turn by default for continuity.
+- Durable persistence is explicit: use context/memory/wiki tools when information must survive across turns.
 
 - CLI i18n: set `POECODER_LANG=zh-cn` or run `poecoder --lang zh-cn` (you can also switch live with `/lang zh-cn`).
 

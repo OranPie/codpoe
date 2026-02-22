@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import asyncio
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -273,6 +274,204 @@ def test_tool_listfile_changeworkdir_and_exit(monkeypatch, tmp_path):
     assert exited.status_code == 200
     assert exited.json()["result"]["exit"] is True
     assert exited.json()["result"]["reason"] == "done"
+
+
+def test_tool_runshell_defaults_timeout_10(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.models import ShellRunResponse
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+    captured: dict[str, object] = {}
+
+    async def fake_run(self, session_id: str, command: str, danger_level: int, cwd: str | None, timeout_s: int):
+        del self
+        captured["session_id"] = session_id
+        captured["command"] = command
+        captured["danger_level"] = danger_level
+        captured["cwd"] = cwd
+        captured["timeout_s"] = timeout_s
+        return ShellRunResponse(allowed=True, exit_code=0, stdout="/tmp", stderr="", policy_reason="")
+
+    monkeypatch.setattr(type(api.STATE.shell), "run", fake_run)
+
+    invoked = client.post(
+        "/tools/invoke",
+        json={"name": "RunShell", "args": {"session_id": "s1", "command": "pwd", "danger_level": 0}},
+    )
+    assert invoked.status_code == 200
+    assert invoked.json()["result"]["allowed"] is True
+    assert captured["timeout_s"] == 10
+
+
+def test_shell_run_endpoint_defaults_timeout_10(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.models import ShellRunResponse
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+    captured: dict[str, object] = {}
+
+    async def fake_run(self, session_id: str, command: str, danger_level: int, cwd: str | None, timeout_s: int):
+        del self
+        captured["timeout_s"] = timeout_s
+        return ShellRunResponse(allowed=True, exit_code=0, stdout="", stderr="", policy_reason="")
+
+    monkeypatch.setattr(type(api.STATE.shell), "run", fake_run)
+
+    resp = client.post(
+        "/shell/run",
+        json={"session_id": "s1", "command": "pwd", "danger_level": 0},
+    )
+    assert resp.status_code == 200
+    assert captured["timeout_s"] == 10
+
+
+def test_tool_output_and_write_from_terminal_source(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.models import ShellRunResponse
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+
+    async def fake_run(self, session_id: str, command: str, danger_level: int, cwd: str | None, timeout_s: int):
+        del self, session_id, command, danger_level, cwd, timeout_s
+        return ShellRunResponse(
+            allowed=True,
+            exit_code=0,
+            stdout="alpha\nbeta\ngamma\n",
+            stderr="",
+            policy_reason="",
+        )
+
+    monkeypatch.setattr(type(api.STATE.shell), "run", fake_run)
+
+    run = client.post(
+        "/tools/invoke",
+        json={"name": "RunShell", "args": {"session_id": "s1", "command": "echo demo", "danger_level": 0}},
+    )
+    assert run.status_code == 200
+    terminal_id = run.json()["result"]["terminal_id"]
+    assert terminal_id.startswith("term_")
+
+    sliced = client.post(
+        "/tools/invoke",
+        json={
+            "name": "Output",
+            "args": {
+                "source": "terminal",
+                "terminal_id": terminal_id,
+                "operation": "match_lines",
+                "pattern": "beta|gamma",
+            },
+        },
+    )
+    assert sliced.status_code == 200
+    assert "beta" in sliced.json()["result"]["text"]
+    assert "gamma" in sliced.json()["result"]["text"]
+
+    written = client.post(
+        "/tools/invoke",
+        json={
+            "name": "Write",
+            "args": {
+                "file": "terminal_extract.txt",
+                "source": "terminal",
+                "terminal_id": terminal_id,
+                "operation": "match_lines",
+                "pattern": "gamma",
+            },
+        },
+    )
+    assert written.status_code == 200
+    assert "gamma" in (tmp_path / "terminal_extract.txt").read_text(encoding="utf-8")
+
+
+def test_terminal_output_id_expires_after_turn(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.models import ShellRunResponse
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        del model, system_message, context, images
+        if "Tool results:" not in user_prompt:
+            return ModelReply(text='@tool RunShell {"command":"pwd","danger_level":0}', raw={"mock": True})
+        return ModelReply(text="done", raw={"mock": True})
+
+    async def fake_run(self, session_id: str, command: str, danger_level: int, cwd: str | None, timeout_s: int):
+        del self, session_id, command, danger_level, cwd, timeout_s
+        return ShellRunResponse(allowed=True, exit_code=0, stdout="/tmp\n", stderr="", policy_reason="")
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+    monkeypatch.setattr(type(api.STATE.shell), "run", fake_run)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    turn = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "show cwd"})
+    assert turn.status_code == 200
+    terminal_id = turn.json()["tool_events"][0]["result"]["terminal_id"]
+
+    expired = client.post(
+        "/tools/invoke",
+        json={"name": "Output", "args": {"source": "terminal", "terminal_id": terminal_id}},
+    )
+    assert expired.status_code == 400
+    assert "expired" in expired.json()["detail"]
+
+
+def test_tool_output_context_and_text_ops(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    client.put(
+        f"/sessions/{session_id}/context",
+        json={"key": "notes", "value": {"a": 1, "b": 2, "status": "ok"}, "scope": "pinned"},
+    )
+
+    context_out = client.post(
+        "/tools/invoke",
+        json={
+            "name": "Output",
+            "args": {"source": "context", "session_id": session_id, "key": "notes", "operation": "truncate", "max_chars": 18},
+        },
+    )
+    assert context_out.status_code == 200
+    assert context_out.json()["result"]["text"].endswith("...")
+
+    text_out = client.post(
+        "/tools/invoke",
+        json={
+            "name": "Output",
+            "args": {
+                "source": "text",
+                "text": "line1\nline2\nline3",
+                "operation": "slice_lines",
+                "start_line": 2,
+                "end_line": 3,
+            },
+        },
+    )
+    assert text_out.status_code == 200
+    assert text_out.json()["result"]["text"] == "line2\nline3"
 
 
 def test_tool_help_returns_details_and_matches(monkeypatch, tmp_path):
@@ -737,6 +936,39 @@ def test_turn_context_does_not_include_model_table(monkeypatch, tmp_path):
     assert resp.json()["output_text"] == "ok"
 
 
+def test_turn_carries_previous_turn_conclusion_with_1000_char_limit(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    captured: dict[str, Any] = {}
+    first_reply = "A" * 1400
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        del model, system_message, images
+        if user_prompt == "first":
+            return ModelReply(text=first_reply, raw={"mock": True})
+        captured["conversation"] = context.get("conversation", {})
+        return ModelReply(text="second-ok", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    first = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "first"})
+    assert first.status_code == 200
+
+    second = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "second"})
+    assert second.status_code == 200
+    conversation = captured["conversation"]
+    assert "previous_turn_conclusion" in conversation
+    assert len(conversation["previous_turn_conclusion"]) == 1000
+    assert conversation["previous_turn_conclusion"].endswith("...")
+
+
 def test_turn_stops_repeated_tool_call_loops(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -796,6 +1028,7 @@ def test_turn_injects_runshell_session_id(monkeypatch, tmp_path):
     assert resp.status_code == 200
     assert called["name"] == "RunShell"
     assert called["args"]["session_id"] == session_id
+    assert called["args"]["timeout_s"] == 10
 
 
 def test_turn_stream_emits_error_event_on_provider_failure(monkeypatch, tmp_path):
@@ -1447,4 +1680,6 @@ def test_model_table_endpoints(monkeypatch, tmp_path):
     assert "StartLeaderRun" in names
     assert "ListFile" in names
     assert "ChangeWorkDir" in names
+    assert "Output" in names
+    assert "Write" in names
     assert "Exit" in names

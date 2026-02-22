@@ -117,6 +117,33 @@ def test_cli_listmodels_accepts_query_filter(monkeypatch) -> None:
     assert captured["total_count"] == 4
 
 
+def test_cli_completion_suggests_models_and_command_subjects() -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=True,
+        model="assistant",
+        lang="en",
+    )
+    cli._update_model_completions(["openai/gpt-5.3-codex-spark"])
+    cli._completion_task_ids.add("task-1")
+
+    model_candidates = cli._completion_candidates(
+        "/changemodel open",
+        "open",
+        len("/changemodel "),
+    )
+    assert "openai/gpt-5.3-codex-spark" in model_candidates
+
+    provider_candidates = cli._completion_candidates("/setbaseuri ", "", len("/setbaseuri "))
+    assert provider_candidates == ["openai", "poe"]
+
+    task_state_candidates = cli._completion_candidates("/tasks ", "", len("/tasks "))
+    assert task_state_candidates == ["cancelled", "failed", "pending", "running", "succeeded"]
+
+    task_id_candidates = cli._completion_candidates("/taskoutput ta", "ta", len("/taskoutput "))
+    assert task_id_candidates == ["task-1"]
+
+
 def test_cli_secretssave_calls_backend(monkeypatch) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",
@@ -556,3 +583,32 @@ def test_cli_setbaseuri_updates_backend(monkeypatch) -> None:
     assert handled is False
     assert str(captured["url"]).endswith("/providers/poe/base-url")
     assert captured["json"] == {"base_url": "https://api.poe.com"}
+
+
+def test_cli_shell_command_uses_default_timeout_10(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    cli.state.session_id = "s1"
+    captured: dict[str, object] = {}
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"allowed": True, "exit_code": 0, "stdout": "ok", "stderr": "", "policy_reason": ""}
+
+    def fake_post(url: str, json: dict):
+        captured["url"] = url
+        captured["json"] = json
+        return Resp()
+
+    monkeypatch.setattr(cli.http, "post", fake_post)
+    handled = cli._handle_command("/shell 0 pwd")
+    assert handled is False
+    assert str(captured["url"]).endswith("/shell/run")
+    assert captured["json"]["timeout_s"] == 10
