@@ -461,7 +461,7 @@ def test_cli_apistatus_backend(monkeypatch, capsys) -> None:
     assert "\"poe_api_key_set\": true" in out
 
 
-def test_cli_resume_by_index_updates_session_state(monkeypatch) -> None:
+def test_cli_resume_by_index_updates_session_state(monkeypatch, capsys) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",
         direct=False,
@@ -480,31 +480,45 @@ def test_cli_resume_by_index_updates_session_state(monkeypatch) -> None:
         def json(self):
             return self._payload
 
-    monkeypatch.setattr(
-        cli.http,
-        "get",
-        lambda *args, **kwargs: Resp(
-            [
+    def fake_get(url: str, *args, **kwargs):
+        del args, kwargs
+        if url.endswith("/sessions"):
+            return Resp(
+                [
+                    {
+                        "id": "sess-1",
+                        "title": "Resume target",
+                        "mode": "coding",
+                        "active_model": "gpt-5.2-codex",
+                        "thinking_level": "balanced",
+                        "thinking_budget": 12000,
+                        "allow_model_command_create": True,
+                        "encourage_model_command_create": True,
+                        "project_id": "demo",
+                    }
+                ]
+            )
+        if "/sessions/sess-1/context" in url:
+            return Resp(
                 {
-                    "id": "sess-1",
-                    "title": "Resume target",
-                    "mode": "coding",
-                    "active_model": "gpt-5.2-codex",
-                    "thinking_level": "balanced",
-                    "thinking_budget": 12000,
-                    "allow_model_command_create": True,
-                    "encourage_model_command_create": True,
-                    "project_id": "demo",
+                    "last_user_prompt": "build api server",
+                    "last_turn_conclusion": "Implemented endpoints and tests",
                 }
-            ]
-        ),
-    )
+            )
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(cli.http, "get", fake_get)
 
     handled = cli._handle_command("/resume 1")
     assert handled is False
     assert cli.state.session_id == "sess-1"
     assert cli.state.session_title == "Resume target"
     assert cli.state.active_model == "gpt-5.2-codex"
+    out = capsys.readouterr().out
+    assert "sess-1" in out
+    assert "gpt-5.2-codex" in out
+    assert "coding" in out
+    assert "build api server" in out
 
 
 def test_cli_thinkdetails_updates_backend_state(monkeypatch) -> None:

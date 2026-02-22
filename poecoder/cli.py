@@ -316,6 +316,44 @@ class PoeCoderCLI:
         if active:
             self._update_model_completions([active])
 
+    def _render_session_state(self) -> None:
+        rows = [
+            [self._t("table.id"), str(self.state.session_id or "-")],
+            [self._t("table.title"), str(self.state.session_title or "-")],
+            [self._t("table.mode"), str(self.state.mode or "-")],
+            [self._t("table.model"), str(self.state.active_model or "auto")],
+            [self._t("table.thinking"), f"{self.state.thinking_level}/{self.state.thinking_budget}"],
+        ]
+        self._print_table([self._t("table.field"), self._t("table.value")], rows)
+
+    def _render_resume_conversation(self) -> None:
+        if self.direct or not self.state.session_id:
+            return
+        try:
+            resp = self.http.get(
+                f"{self.state.backend_url}/sessions/{self.state.session_id}/context",
+                params={"keys": "last_user_prompt,last_turn_conclusion"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                return
+        except httpx.HTTPError:
+            return
+
+        last_user_prompt = str(payload.get("last_user_prompt", "") or "").strip()
+        last_turn_conclusion = str(payload.get("last_turn_conclusion", "") or "").strip()
+        if not last_user_prompt and not last_turn_conclusion:
+            return
+
+        print(self.style.info(self._t("msg.resume_conversation_header")))
+        rows: list[list[str]] = []
+        if last_user_prompt:
+            rows.append([self._t("table.last_user_prompt"), self._shorten(last_user_prompt, 120)])
+        if last_turn_conclusion:
+            rows.append([self._t("table.last_turn_conclusion"), self._shorten(last_turn_conclusion, 120)])
+        self._print_table([self._t("table.field"), self._t("table.value")], rows)
+
     def _render_task_list(self, tasks: list[dict[str, Any]]) -> None:
         print(self.style.info(self._t("msg.task_list_header", count=len(tasks))))
         if not tasks:
@@ -1107,6 +1145,8 @@ class PoeCoderCLI:
                     )
                 )
             )
+            self._render_session_state()
+            self._render_resume_conversation()
             return False
         if cmd == "/lang" and len(parts) == 2:
             requested = parts[1]

@@ -256,6 +256,17 @@ def put_context(session_id: str, req: ContextPutRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/sessions/{session_id}/context")
+def get_context(session_id: str, keys: str | None = None) -> dict[str, Any]:
+    state = get_state()
+    try:
+        state.sessions.get(session_id)
+        key_list = [item.strip() for item in (keys or "").split(",") if item.strip()] or None
+        return state.sessions.get_context(session_id, key_list)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 
 
 @app.get("/models")

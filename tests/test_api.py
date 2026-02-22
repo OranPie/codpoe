@@ -1643,6 +1643,40 @@ def test_turn_context_is_ranked_and_compacted(monkeypatch, tmp_path):
     assert diagnostics["dropped_items"] >= 1
 
 
+def test_get_session_context_endpoint_with_keys_filter(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = None
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+
+    client.put(
+        f"/sessions/{session_id}/context",
+        json={"key": "last_user_prompt", "value": "hello", "scope": "pinned"},
+    )
+    client.put(
+        f"/sessions/{session_id}/context",
+        json={"key": "last_turn_conclusion", "value": "done", "scope": "pinned"},
+    )
+    client.put(
+        f"/sessions/{session_id}/context",
+        json={"key": "noise", "value": "x", "scope": "turn"},
+    )
+
+    filtered = client.get(
+        f"/sessions/{session_id}/context",
+        params={"keys": "last_user_prompt,last_turn_conclusion"},
+    )
+    assert filtered.status_code == 200
+    payload = filtered.json()
+    assert payload["last_user_prompt"] == "hello"
+    assert payload["last_turn_conclusion"] == "done"
+    assert "noise" not in payload
+
+
 def test_model_table_endpoints(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
