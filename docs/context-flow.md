@@ -17,7 +17,11 @@ This document explains what is carried into each model turn and what is intentio
 - `selected_context`: auto-ranked compact context entries
 - `conversation.previous_user_message`: latest prior user message carry-over
 - `conversation.previous_turn_conclusion`: compact carry-over conclusion (up to 1000 chars from prior turn)
-- `memory`: session/project/global/query memory hits
+- `conversation.user_prompt_history`: full session user-prompt history (compacted per item)
+- `conversation.turn_conclusion_history`: full session conclusion history (compacted per item)
+- `continuation` (when present): compact carry-over keys from pinned context:
+  - `project_progress`, `current_task`, `next_step`, `working_set`, `recent_decisions`, `last_user_goal`
+- `memory`: full session/project/global/query memory sets (not just top-k hits)
 - `context_diagnostics`: selected vs dropped context metadata
 - `command_catalog`: available tool names, args, effects
 - `command_policy`, `metadata`, and model settings
@@ -29,9 +33,17 @@ This document explains what is carried into each model turn and what is intentio
 - These can still be loaded on demand using explicit keys or targeted tool calls.
 - If content must persist, store it explicitly (context/memory/wiki). Otherwise it is not guaranteed to be included.
 
+## Continuation behavior guidance
+
+- For multi-turn project execution, model should continue from `previous_turn_conclusion` and `continuation` first.
+- Avoid restarting global root scans unless scope is missing/contradictory or user explicitly asks.
+- Persist compact progress checkpoints (`decision`, `touched paths`, `next step`) in pinned context/memory for stable continuation.
+
 ## Mid-turn text shaping
 
 - `RunShell` emits `terminal_id` values that are valid only within the same message scope.
+- `terminal_id` is only for `Output`/`Write` with `source=terminal`; it is not a `session_id`.
+- `RunShell` can use `session_id="current"` (or omit `session_id`) to target active session.
 - `Output` can load source data from `text|context|memory|terminal` and apply operations:
   - line slice (`slice_lines`)
   - pattern line filter (`match_lines`)

@@ -969,6 +969,160 @@ def test_turn_carries_previous_turn_conclusion_with_1000_char_limit(monkeypatch,
     assert conversation["previous_turn_conclusion"].endswith("...")
 
 
+def test_turn_includes_continuation_context_keys(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    captured: dict[str, Any] = {}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        del model, system_message, user_prompt, images
+        captured["continuation"] = context.get("continuation", {})
+        return ModelReply(text="ok", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    client.put(
+        f"/sessions/{session_id}/context",
+        json={"key": "project_progress", "value": "done step1; next step2", "scope": "pinned"},
+    )
+    client.put(
+        f"/sessions/{session_id}/context",
+        json={"key": "next_step", "value": "implement parser", "scope": "pinned"},
+    )
+
+    resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "continue"})
+    assert resp.status_code == 200
+    continuation = captured["continuation"]
+    assert continuation["project_progress"] == "done step1; next step2"
+    assert continuation["next_step"] == "implement parser"
+
+
+def test_turn_runshell_session_id_accepts_current_and_terminal_alias(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    seen_calls: list[dict[str, Any]] = []
+    model_calls = {"n": 0}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        del model, system_message, context, images
+        model_calls["n"] += 1
+        if model_calls["n"] == 1:
+            return ModelReply(
+                text='@tool RunShell {"command":"pwd","danger_level":0,"session_id":"current"}\n'
+                '@tool RunShell {"command":"pwd","danger_level":0,"session_id":"term_deadbeef"}',
+                raw={"mock": True},
+            )
+        assert "Tool results:" in user_prompt
+        return ModelReply(text="ok", raw={"mock": True})
+
+    async def fake_invoke(self, actor: str, name: str, args: dict[str, Any]):
+        del self, actor
+        seen_calls.append({"name": name, "args": dict(args)})
+        return {"ok": True}
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+    monkeypatch.setattr(type(api.STATE.tools), "invoke", fake_invoke)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "run shell"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["output_text"] == "ok"
+    assert len(seen_calls) == 2
+    assert seen_calls[0]["name"] == "RunShell"
+    assert seen_calls[1]["name"] == "RunShell"
+    assert seen_calls[0]["args"]["session_id"] == session_id
+    assert seen_calls[1]["args"]["session_id"] == session_id
+
+
+def test_turn_conversation_history_includes_full_session_prompts_and_conclusions(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    captured: list[dict[str, Any]] = []
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        del model, system_message, images
+        captured.append(
+            {
+                "prompt": user_prompt,
+                "conversation": dict(context.get("conversation", {})),
+            }
+        )
+        return ModelReply(text=f"done-{user_prompt}", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    for prompt in ["step-1", "step-2", "step-3"]:
+        resp = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": prompt})
+        assert resp.status_code == 200
+
+    third = captured[2]["conversation"]
+    assert third["previous_user_message"] == "step-2"
+    assert third["previous_turn_conclusion"] == "done-step-2"
+    assert third["user_prompt_history"] == ["step-1", "step-2"]
+    assert third["turn_conclusion_history"] == ["done-step-1", "done-step-2"]
+
+
+def test_turn_memory_context_loads_full_session_scope(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+    from poecoder.services.model_clients import ModelReply
+
+    api.STATE = api.build_app_state(tmp_path)
+    captured: dict[str, Any] = {}
+
+    async def fake_chat(model: str, system_message: str, user_prompt: str, context: dict, images=None):
+        del model, system_message, user_prompt, images
+        captured["memory"] = context.get("memory", {})
+        return ModelReply(text="ok", raw={"mock": True})
+
+    monkeypatch.setattr(api.STATE.turns.model_client, "chat", fake_chat)
+
+    client = TestClient(api.app)
+    session_id = client.post("/sessions", json={"mode": "coding", "project_id": "demo"}).json()["id"]
+    for idx in range(12):
+        write_resp = client.post(
+            "/memory/write",
+            json={
+                "scope": "session",
+                "session_id": session_id,
+                "project_id": "demo",
+                "content": f"mem-{idx}",
+                "priority": 0,
+                "tags": [],
+            },
+        )
+        assert write_resp.status_code == 200
+
+    turn = client.post("/turns/execute", json={"session_id": session_id, "user_prompt": "check memory"})
+    assert turn.status_code == 200
+    memory = captured["memory"]
+    assert isinstance(memory, dict)
+    assert len(memory["session"]) == 12
+
+
 def test_turn_stops_repeated_tool_call_loops(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))

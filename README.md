@@ -50,7 +50,7 @@ PoeCoder is a Python coding assistant runtime with:
 - CLI supports `/balance` to read current Poe point balance.
 - CLI output uses live streamed events (`status`, `tool`, `delta`) for better readability.
 - Assistant output now renders basic Markdown (headings/lists/inline code/code blocks) in colorful CUI style.
-- During streaming response wait, CLI shows `Thinking... (Ns elapsed)` as a lightweight elapsed-time indicator.
+- During response waits, CLI splits elapsed indicators by situation: `Thinking... (Ns elapsed)` for pre-first-token stream wait, and `Generating... (Ns elapsed)` for non-stream/direct waits.
 - Provider base URIs are configurable:
   - `POECODER_POE_API_URL` (default `https://api.poe.com/bot/`)
   - `POECODER_OPENAI_API_URL` (default `https://api.openai.com/v1`)
@@ -62,8 +62,11 @@ PoeCoder is a Python coding assistant runtime with:
 - `StartSubAgent` supports `system_message_modifier` so the main model can shape subagent behavior safely.
 - New tool pair: `Output` + `Write` for mid-turn text processing from `text/context/memory/terminal` sources.
 - `RunShell` now returns ephemeral `terminal_id` values that can be consumed by `Output`/`Write` in the same turn.
+- `RunShell` accepts `session_id="current"` (or omitted `session_id`) and auto-corrects mistaken `term_*` IDs to the active session.
 - A compact `previous_turn_conclusion` (up to 1000 chars) is carried into the next turn by default for continuity.
+- Conversation continuity includes full `user_prompt_history` and `turn_conclusion_history` in context for multi-step project work.
 - Durable persistence is explicit: use context/memory/wiki tools when information must survive across turns.
+- During `@ask`, press `Esc` (or type `/cancel`) to cancel the current turn.
 
 - CLI i18n: set `POECODER_LANG=zh-cn` or run `poecoder --lang zh-cn` (you can also switch live with `/lang zh-cn`).
 

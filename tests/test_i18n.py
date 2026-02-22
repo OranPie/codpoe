@@ -24,6 +24,9 @@ def test_translator_zhcn_strings() -> None:
     assert tr.t("msg.current_model", model="assistant") == "当前模型=assistant"
     assert tr.t("msg.plan_mode_enabled").startswith("已切换到规划模式")
     assert tr.t("msg.review_header", model="assistant").startswith("审查模型=")
+    assert tr.t("msg.thinking_indicator", seconds=2).startswith("思考中")
+    assert tr.t("msg.generating_indicator", seconds=2).startswith("生成中")
+    assert tr.t("msg.turn_cancelled").startswith("已取消")
 
 
 def test_is_supported_lang() -> None:

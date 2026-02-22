@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from poecoder.cli import PoeCoderCLI, StreamEventError
+from poecoder.cli import PoeCoderCLI, StreamEventError, TurnCancelledError
 from poecoder.services.model_catalog import ModelCatalog
 
 
@@ -321,6 +321,41 @@ def test_cli_stream_thinking_indicator_starts_and_stops(monkeypatch) -> None:
     assert calls["stopped"] == 1
 
 
+def test_cli_nonstream_generating_indicator_starts_and_stops(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    calls = {"started": 0, "stopped": 0}
+
+    async def fake_generating(stop_event: asyncio.Event) -> None:
+        calls["started"] += 1
+        await stop_event.wait()
+        calls["stopped"] += 1
+
+    monkeypatch.setattr(cli, "_generating_indicator_loop", fake_generating)
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"session_id": "s1", "model": "assistant", "output_text": "ok", "tool_events": []}
+
+    class FakeAsyncHTTP:
+        async def post(self, *args, **kwargs):
+            del args, kwargs
+            return Resp()
+
+    payload = {"session_id": "s1", "user_prompt": "hello"}
+    out = asyncio.run(cli._run_backend_turn_nonstream(FakeAsyncHTTP(), payload))
+    assert out["output_text"] == "ok"
+    assert calls["started"] == 1
+    assert calls["stopped"] == 1
+
+
 def test_cli_backend_turn_handles_ask_without_manual_new_prompt(monkeypatch) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",
@@ -360,6 +395,52 @@ def test_cli_backend_turn_handles_ask_without_manual_new_prompt(monkeypatch) -> 
     assert prompts[0] == "deploy app"
     assert "Interactive user answers" in prompts[1]
     assert "prod" in prompts[1]
+
+
+def test_cli_prompt_ask_answer_supports_escape_cancel(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": "\x1b")
+    try:
+        cli._prompt_ask_answer({"prompt": "x", "key": "x", "required": True})
+    except TurnCancelledError:
+        pass
+    else:
+        raise AssertionError("expected ask answer to be cancelled on Esc")
+
+
+def test_cli_backend_turn_cancelled_on_escape_from_ask(monkeypatch) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    cli.state.session_id = "s1"
+    calls = {"n": 0}
+
+    async def fake_stream(async_http, payload):
+        del async_http, payload
+        calls["n"] += 1
+        cli._last_stream_final = {
+            "session_id": "s1",
+            "model": "assistant",
+            "output_text": "",
+            "tool_events": [],
+            "ask_request": {"prompt": "Which env?", "key": "env", "required": True},
+            "awaiting_user_input": True,
+        }
+        return False
+
+    monkeypatch.setattr(cli, "_stream_backend_turn", fake_stream)
+    monkeypatch.setattr(cli, "_prompt_ask_answer", lambda _ask: (_ for _ in ()).throw(TurnCancelledError()))
+
+    asyncio.run(cli._run_backend_turn("deploy app"))
+    assert calls["n"] == 1
 
 
 def test_cli_stream_event_error_does_not_retry_nonstream(monkeypatch) -> None:

@@ -218,16 +218,22 @@ class TurnService:
     def _prepare_turn(self, req: TurnRequest) -> tuple[Any, dict[str, Any], str, str, Any]:
         session = self.sessions.get(req.session_id)
         self.sessions.reset_for_turn(session)
-        previous_user_message = self.sessions.get_context(session.id, ["last_user_prompt"]).get("last_user_prompt", "")
+        conversation_raw = self.sessions.get_context(
+            session.id,
+            ["last_user_prompt", "last_turn_conclusion", "user_prompt_history", "turn_conclusion_history"],
+        )
+        previous_user_message = conversation_raw.get("last_user_prompt", "")
         if not isinstance(previous_user_message, str):
             previous_user_message = str(previous_user_message)
         if len(previous_user_message) > 4000:
             previous_user_message = previous_user_message[:3997] + "..."
-        previous_turn_conclusion = self.sessions.get_context(session.id, ["last_turn_conclusion"]).get("last_turn_conclusion", "")
+        previous_turn_conclusion = conversation_raw.get("last_turn_conclusion", "")
         if not isinstance(previous_turn_conclusion, str):
             previous_turn_conclusion = str(previous_turn_conclusion)
         if len(previous_turn_conclusion) > 1000:
             previous_turn_conclusion = previous_turn_conclusion[:997] + "..."
+        user_prompt_history = self._normalize_history_list(conversation_raw.get("user_prompt_history"), max_chars=2000)
+        turn_conclusion_history = self._normalize_history_list(conversation_raw.get("turn_conclusion_history"), max_chars=2000)
 
         selected_context, context_diagnostics = self.sessions.select_context_for_prompt(
             session_id=session.id,
@@ -236,6 +242,13 @@ class TurnService:
             max_items=20,
             max_value_chars=10000,
         )
+        continuation_keys = ["project_progress", "current_task", "next_step", "working_set", "recent_decisions", "last_user_goal"]
+        continuation_raw = self.sessions.get_context(session.id, continuation_keys)
+        continuation: dict[str, Any] = {}
+        for key in continuation_keys:
+            if key not in continuation_raw:
+                continue
+            continuation[key] = self._compact_continuation_value(continuation_raw[key])
         memory_context = self._load_memory(session.id, session.project_id, req.user_prompt)
         available_models = self.model_catalog.list_models(refresh=False)
         self.model_profiles.ensure_seeded(available_models)
@@ -245,6 +258,8 @@ class TurnService:
             "conversation": {
                 "previous_user_message": previous_user_message,
                 "previous_turn_conclusion": previous_turn_conclusion,
+                "user_prompt_history": user_prompt_history,
+                "turn_conclusion_history": turn_conclusion_history,
             },
             "memory": memory_context,
             "context_diagnostics": context_diagnostics,
@@ -255,6 +270,8 @@ class TurnService:
             },
             "metadata": req.metadata,
         }
+        if continuation:
+            context["continuation"] = continuation
 
         decision = self.router.decide(req.user_prompt, context_size_hint=len(json.dumps(context)), tool_count_hint=0)
         thinking_level = req.thinking_level or session.thinking_level
@@ -306,20 +323,14 @@ class TurnService:
         args = call.get("args", {})
         if not isinstance(args, dict):
             return
-        if name == "ChangeModel" and "session_id" not in args:
-            args["session_id"] = session_id
-        if name == "Review" and "session_id" not in args:
-            args["session_id"] = session_id
+        if name in {"ChangeModel", "Review", "StartLeaderRun", "StartBackgroundTurn", "RunShell"}:
+            TurnService._normalize_session_arg(args=args, key="session_id", fallback_session_id=session_id, tool_name=str(name))
         if name in {"InstallCommand", "EditCommand", "DelCommand"} and "session_id" not in args:
             args["session_id"] = session_id
-        if name == "StartLeaderRun" and "session_id" not in args:
-            args["session_id"] = session_id
-        if name == "StartBackgroundTurn" and "session_id" not in args:
-            args["session_id"] = session_id
-        if name == "StartBackgroundSubAgent" and "parent_session_id" not in args:
-            args["parent_session_id"] = session_id
-        if name == "RunShell" and "session_id" not in args:
-            args["session_id"] = session_id
+        if name == "StartBackgroundSubAgent":
+            TurnService._normalize_session_arg(args=args, key="parent_session_id", fallback_session_id=session_id, tool_name=str(name))
+        if name == "StartSubAgent":
+            TurnService._normalize_session_arg(args=args, key="parent_session_id", fallback_session_id=session_id, tool_name=str(name))
         if name == "RunShell" and "timeout_s" not in args:
             args["timeout_s"] = 10
 
@@ -329,6 +340,8 @@ class TurnService:
         self.sessions.put_context(session_id, "last_model_output", output_text, scope="turn")
         turn_conclusion = self._conclude_for_next_turn(output_text)
         self.sessions.put_context(session_id, "last_turn_conclusion", turn_conclusion, scope="pinned")
+        self._append_to_context_history(session_id, "user_prompt_history", user_prompt, max_chars=2000)
+        self._append_to_context_history(session_id, "turn_conclusion_history", turn_conclusion, max_chars=2000)
         self.sessions.maybe_update_title_from_turn(session_id, user_prompt, output_text)
         self.sessions.touch(session_id)
 
@@ -344,15 +357,16 @@ class TurnService:
         return text[: max_chars - 3].rstrip() + "..."
 
     def _load_memory(self, session_id: str, project_id: str, query: str) -> dict[str, list[dict[str, Any]]]:
+        all_limit = 10000
         session_entries = self.memories.read(
-            MemoryReadRequest(scope="session", session_id=session_id, limit=8)
+            MemoryReadRequest(scope="session", session_id=session_id, limit=all_limit)
         )
         project_entries = self.memories.read(
-            MemoryReadRequest(scope="project", project_id=project_id, limit=8)
+            MemoryReadRequest(scope="project", project_id=project_id, limit=all_limit)
         )
-        global_entries = self.memories.read(MemoryReadRequest(scope="global", limit=4))
+        global_entries = self.memories.read(MemoryReadRequest(scope="global", limit=all_limit))
         query_entries = self.memories.read(
-            MemoryReadRequest(query=query, project_id=project_id, limit=6)
+            MemoryReadRequest(query=query, project_id=project_id, limit=all_limit)
         )
         return {
             "session": [item.model_dump(mode="json") for item in session_entries],
@@ -360,6 +374,50 @@ class TurnService:
             "global": [item.model_dump(mode="json") for item in global_entries],
             "query_hits": [item.model_dump(mode="json") for item in query_entries],
         }
+
+    @staticmethod
+    def _normalize_session_arg(args: dict[str, Any], key: str, fallback_session_id: str, tool_name: str) -> None:
+        raw = args.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            args[key] = fallback_session_id
+            return
+        candidate = raw.strip()
+        lowered = candidate.lower()
+        if lowered in {"current", "self", "active"}:
+            args[key] = fallback_session_id
+            return
+        if key == "session_id" and candidate.startswith("term_") and tool_name == "RunShell":
+            # terminal_id belongs to Output/Write terminal source; RunShell needs a real session id.
+            args[key] = fallback_session_id
+
+    def _append_to_context_history(self, session_id: str, key: str, value: str, max_chars: int = 2000) -> None:
+        if not isinstance(value, str):
+            value = str(value)
+        clean = value.strip()
+        if not clean:
+            return
+        if len(clean) > max_chars:
+            clean = clean[: max_chars - 3] + "..."
+        existing = self.sessions.get_context(session_id, [key]).get(key, [])
+        if not isinstance(existing, list):
+            existing = []
+        existing.append(clean)
+        self.sessions.put_context(session_id, key, existing, scope="pinned")
+
+    @staticmethod
+    def _normalize_history_list(value: Any, max_chars: int = 2000) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value:
+            text = item if isinstance(item, str) else str(item)
+            clean = text.strip()
+            if not clean:
+                continue
+            if len(clean) > max_chars:
+                clean = clean[: max_chars - 3] + "..."
+            out.append(clean)
+        return out
 
     @staticmethod
     def _with_turn_phase(
@@ -772,3 +830,32 @@ class TurnService:
         if isinstance(note, str) and note.strip():
             out["note"] = note.strip()[:400]
         return out
+
+    def _compact_continuation_value(self, value: Any, max_chars: int = 900, depth: int = 0) -> Any:
+        if depth >= 4:
+            return "<truncated-depth>"
+        if isinstance(value, str):
+            clean = re.sub(r"\s+", " ", value).strip()
+            if len(clean) <= max_chars:
+                return clean
+            if max_chars <= 3:
+                return clean[:max_chars]
+            return clean[: max_chars - 3] + "..."
+        if isinstance(value, list):
+            items = [
+                self._compact_continuation_value(item, max_chars=max_chars // 2, depth=depth + 1)
+                for item in value[:12]
+            ]
+            if len(value) > 12:
+                items.append(f"... ({len(value) - 12} more)")
+            return items
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            entries = list(value.items())
+            for idx, (key, item) in enumerate(entries):
+                if idx >= 12:
+                    out["..."] = f"({len(entries) - 12} more keys)"
+                    break
+                out[str(key)] = self._compact_continuation_value(item, max_chars=max_chars // 2, depth=depth + 1)
+            return out
+        return value

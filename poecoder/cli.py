@@ -86,6 +86,10 @@ class StreamEventError(httpx.HTTPError):
         self.retryable = retryable
 
 
+class TurnCancelledError(Exception):
+    pass
+
+
 class PoeCoderCLI:
     _COMMANDS: tuple[str, ...] = (
         "/help",
@@ -252,7 +256,7 @@ class PoeCoderCLI:
         for line in lines:
             print(self._render_markdown_line(line, md_state))
 
-    async def _thinking_indicator_loop(self, stop_event: asyncio.Event) -> None:
+    async def _elapsed_indicator_loop(self, stop_event: asyncio.Event, message_key: str) -> None:
         loop = asyncio.get_running_loop()
         started = loop.time()
         last_elapsed = 0
@@ -262,7 +266,13 @@ class PoeCoderCLI:
             if elapsed <= 0 or elapsed == last_elapsed:
                 continue
             last_elapsed = elapsed
-            print(self.style.dim(self._t("msg.thinking_indicator", seconds=elapsed)))
+            print(self.style.dim(self._t(message_key, seconds=elapsed)))
+
+    async def _thinking_indicator_loop(self, stop_event: asyncio.Event) -> None:
+        await self._elapsed_indicator_loop(stop_event, "msg.thinking_indicator")
+
+    async def _generating_indicator_loop(self, stop_event: asyncio.Event) -> None:
+        await self._elapsed_indicator_loop(stop_event, "msg.generating_indicator")
 
     def _print_table(self, headers: list[str], rows: list[list[str]]) -> None:
         if not rows:
@@ -706,6 +716,11 @@ class PoeCoderCLI:
             # Best effort only; some platforms don't provide readline.
             return
 
+    @staticmethod
+    def _is_escape_cancel(value: str) -> bool:
+        stripped = (value or "").strip()
+        return stripped in {"\x1b", "/cancel"}
+
     def _maybe_request_api_key(self) -> None:
         if self.settings.poe_api_key or self.direct_model_client.api_key:
             return
@@ -1000,6 +1015,9 @@ class PoeCoderCLI:
                 print()
                 break
             if not raw:
+                continue
+            if self._is_escape_cancel(raw):
+                print(self.style.warn(self._t("msg.turn_cancelled")))
                 continue
             if raw.startswith("/"):
                 try:
@@ -1844,7 +1862,11 @@ class PoeCoderCLI:
                 if ask_round > max_ask_rounds:
                     print(self.style.warn(self._t("msg.ask_loop_limit")))
                     return
-                answer = self._prompt_ask_answer(ask)
+                try:
+                    answer = self._prompt_ask_answer(ask)
+                except TurnCancelledError:
+                    print(self.style.warn(self._t("msg.turn_cancelled")))
+                    return
                 ask_history.append(
                     {
                         "key": str(ask.get("key", "answer")),
@@ -1973,13 +1995,20 @@ class PoeCoderCLI:
         return saw_delta
 
     async def _run_backend_turn_nonstream(self, async_http: httpx.AsyncClient, payload: dict[str, Any]) -> dict[str, Any]:
-        resp = await async_http.post(
-            f"{self.state.backend_url}/turns/execute",
-            json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, dict) else {}
+        indicator_stop = asyncio.Event()
+        indicator_task: asyncio.Task[None] = asyncio.create_task(self._generating_indicator_loop(indicator_stop))
+        try:
+            resp = await async_http.post(
+                f"{self.state.backend_url}/turns/execute",
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else {}
+        finally:
+            indicator_stop.set()
+            with suppress(asyncio.CancelledError):
+                await indicator_task
 
     def _render_backend_nonstream_result(self, payload: dict[str, Any], show_text: bool = True) -> None:
         if not isinstance(payload, dict):
@@ -2017,20 +2046,31 @@ class PoeCoderCLI:
             }
             if ask_history:
                 direct_context["ask_history"] = list(ask_history)
-            reply = await self.direct_model_client.chat(
-                model=self.model,
-                system_message=self.state.system_message,
-                user_prompt=current_prompt,
-                context=direct_context,
-                images=images or [],
-            )
+            indicator_stop = asyncio.Event()
+            indicator_task: asyncio.Task[None] = asyncio.create_task(self._generating_indicator_loop(indicator_stop))
+            try:
+                reply = await self.direct_model_client.chat(
+                    model=self.model,
+                    system_message=self.state.system_message,
+                    user_prompt=current_prompt,
+                    context=direct_context,
+                    images=images or [],
+                )
+            finally:
+                indicator_stop.set()
+                with suppress(asyncio.CancelledError):
+                    await indicator_task
             ask = self._parse_ask_from_text(reply.text)
             if ask is None:
                 print(self.style.title(self._t("stream.assistant")))
                 self._render_assistant_text(reply.text)
                 return
             print(self.style.info(self._t("msg.ask_from_model", prompt=str(ask.get("prompt", "")))))
-            answer = self._prompt_ask_answer(ask)
+            try:
+                answer = self._prompt_ask_answer(ask)
+            except TurnCancelledError:
+                print(self.style.warn(self._t("msg.turn_cancelled")))
+                return
             ask_history.append(
                 {
                     "key": str(ask.get("key", "answer")),
@@ -2061,6 +2101,8 @@ class PoeCoderCLI:
             lines: list[str] = []
             while True:
                 line = input("")
+                if self._is_escape_cancel(line):
+                    raise TurnCancelledError
                 if line == "":
                     if required and not lines:
                         print(self.style.warn(self._t("msg.ask_empty_required")))
@@ -2070,6 +2112,8 @@ class PoeCoderCLI:
             return "\n".join(lines)
         while True:
             answer = input(self._t("msg.ask_input_prompt"))
+            if self._is_escape_cancel(answer):
+                raise TurnCancelledError
             if required and not answer.strip():
                 print(self.style.warn(self._t("msg.ask_empty_required")))
                 continue

@@ -60,6 +60,7 @@ Commands:
   /shell <danger> <command>           Run shell command through policy engine
 Protocol:
   @ask {"prompt":"...","key":"..."}   Model asks for extra info; CLI prompts inline and auto-continues
+  Press Esc (or type /cancel) while answering @ask to cancel the current turn
 """.strip(),
         "msg.login_cancelled": "API key login cancelled.",
         "msg.api_key_missing_prompt": "No Poe API key configured. Enter one now (press Enter to skip).",
@@ -85,7 +86,9 @@ Protocol:
         "msg.ask_input_prompt": "answer> ",
         "msg.ask_empty_required": "Answer required; please enter a value.",
         "msg.ask_loop_limit": "Ask loop limit reached; stopping automatic continuation.",
+        "msg.turn_cancelled": "Current turn cancelled.",
         "msg.thinking_indicator": "Thinking... ({seconds}s elapsed)",
+        "msg.generating_indicator": "Generating... ({seconds}s elapsed)",
         "msg.message_cost": "message cost={cost} points (balance {before}->{after})",
         "msg.system_updated": "System message updated.",
         "msg.mode_set": "Mode set to {mode}",
@@ -245,6 +248,7 @@ Protocol:
   /shell <danger> <command>           通过策略引擎执行 shell 命令
 协议：
   @ask {"prompt":"...","key":"..."}   模型可实时追问；CLI 内联收集输入并自动续跑
+  回答 @ask 时按 Esc（或输入 /cancel）可取消当前轮次
 """.strip(),
         "msg.login_cancelled": "已取消 API Key 登录。",
         "msg.api_key_missing_prompt": "未配置 Poe API Key。现在输入（直接回车可跳过）。",
@@ -270,7 +274,9 @@ Protocol:
         "msg.ask_input_prompt": "回答> ",
         "msg.ask_empty_required": "该问题必填，请输入内容。",
         "msg.ask_loop_limit": "连续追问次数已达上限，已停止自动续跑。",
+        "msg.turn_cancelled": "已取消当前轮次。",
         "msg.thinking_indicator": "思考中...（已耗时 {seconds} 秒）",
+        "msg.generating_indicator": "生成中...（已耗时 {seconds} 秒）",
         "msg.message_cost": "单条消息成本={cost} 点（余额 {before}->{after}）",
         "msg.system_updated": "系统提示词已更新。",
         "msg.mode_set": "模式已切换为 {mode}",

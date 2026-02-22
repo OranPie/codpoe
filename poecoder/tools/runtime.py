@@ -97,7 +97,7 @@ class ToolRuntime:
             {"name": "ListLeaderJobs", "args": "run_id", "effect": "List jobs under a leader run"},
             {"name": "WaitLeaderRun", "args": "run_id,timeout_s?", "effect": "Wait for leader run completion"},
             {"name": "CancelLeaderRun", "args": "run_id", "effect": "Cancel active leader run"},
-            {"name": "RunShell", "args": "session_id,command,danger_level,cwd?,timeout_s?", "effect": "Run shell command with policy"},
+            {"name": "RunShell", "args": "session_id?(current|id),command,danger_level,cwd?,timeout_s?", "effect": "Run shell command with policy"},
             {"name": "Exit", "args": "reason?", "effect": "Signal exit request from model/user"},
             {"name": "WikiQuery", "args": "project_id,query,topic?,include_content?,include_meta?,max_content_chars?,limit?", "effect": "Query project wiki with filters"},
             {"name": "WikiCompact", "args": "project_id", "effect": "Compact wiki docs"},
@@ -775,6 +775,7 @@ class ToolRuntime:
             },
             "RunShell": {
                 "guidance": [
+                    "Use session_id='current' (or omit session_id) to target active session.",
                     "Set danger_level=0 for read-only commands.",
                     "Set cwd when command must run in a specific directory.",
                     "Keep commands deterministic and bounded by timeout_s.",

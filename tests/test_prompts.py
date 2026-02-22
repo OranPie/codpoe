@@ -29,6 +29,9 @@ def test_main_system_message_contains_tool_protocol() -> None:
     assert "prefer filtered extraction" in MAIN_SYSTEM_MESSAGE
     assert "@ask {\"prompt\":\"...\",\"key\":\"...\"}" in MAIN_SYSTEM_MESSAGE
     assert "RunShell returns a terminal_id" in MAIN_SYSTEM_MESSAGE
+    assert "terminal_id is not session_id" in MAIN_SYSTEM_MESSAGE
+    assert "Continuation protocol" in MAIN_SYSTEM_MESSAGE
+    assert "Do NOT restart from repository root scanning by default." in MAIN_SYSTEM_MESSAGE
 
 
 def test_subagent_modifier_is_included() -> None:

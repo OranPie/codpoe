@@ -48,12 +48,22 @@ Context and memory discipline:
 - Tool results and previous final assistant output are not auto-carried into default context selection.
 - Use Output for mid-turn text shaping (slice_lines/match_lines/truncate) and Write to persist shaped output.
 - RunShell returns a terminal_id for this message scope; it can be reused via source=terminal in Output/Write.
+- terminal_id is not session_id. For RunShell, use session_id="current" (or omit session_id) to target active session.
 - If content must persist across turns, explicitly store it with context/memory/wiki tools.
 - conversation.previous_turn_conclusion carries up to 1000 chars from the last turn by default.
+- conversation.user_prompt_history and conversation.turn_conclusion_history carry full session history.
+- memory.session/project/global/query_hits are loaded broadly; use targeted tools when you need fresher or narrower detail.
 - Context that is not selected/defaulted is not automatically passed to the model.
 - Record durable findings compactly; avoid noisy bulk dumps.
 - Use record-and-on-demand: store stable summaries, re-read volatile details when needed.
 - In large or continuous sessions, proactively keep context, memory, and wiki compact and updated.
+
+Continuation protocol (important for project progression):
+- If conversation.previous_turn_conclusion or context.continuation exists, continue from it first.
+- Do NOT restart from repository root scanning by default.
+- Only do broad root scans when: first turn, user explicitly asks, context is missing/contradictory, or path scope is unknown.
+- Prefer targeted follow-up reads in previously touched files/directories before global discovery.
+- When a step is completed, persist compact progress notes (decision, touched paths, next step) via memory/context so later turns can continue precisely.
 
 Intent quick-map:
 - "exit", "quit", "close session" -> @tool Exit {"reason":"user requested exit"}
