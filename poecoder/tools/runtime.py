@@ -55,6 +55,7 @@ class ToolRuntime:
 
     def command_catalog(self) -> list[dict[str, Any]]:
         return [
+            {"name": "Help", "args": "tool_name?/query?", "effect": "Get detailed help for tool usage"},
             {"name": "ReadRaw", "args": "file,line,end_line?", "effect": "Read source text by lines"},
             {"name": "ReadStruct", "args": "target,language,dependency_depth", "effect": "Read symbol/structure summary"},
             {"name": "ReadRecursive", "args": "seed_files,boundary", "effect": "Expand related files recursively"},
@@ -123,6 +124,11 @@ class ToolRuntime:
             )
 
     async def _dispatch(self, name: str, args: dict[str, Any]) -> Any:
+        if name == "Help":
+            return self._tool_help(
+                tool_name=args.get("tool_name") or args.get("name"),
+                query=args.get("query"),
+            )
         if name == "ListFile":
             return self._list_file(**args)
         if name == "ChangeWorkDir":
@@ -379,6 +385,186 @@ class ToolRuntime:
             (name, content, expires_at.isoformat(), datetime.now(tz=timezone.utc).isoformat()),
         )
         return {"name": name, "expires_at": expires_at.isoformat()}
+
+    def _tool_help(self, tool_name: Any = None, query: Any = None) -> dict[str, Any]:
+        catalog = self.command_catalog()
+        indexed = {str(item.get("name", "")).lower(): item for item in catalog}
+        if "readrecursive" in indexed:
+            indexed["readrecurisive"] = indexed["readrecursive"]
+
+        requested = ""
+        if isinstance(tool_name, str) and tool_name.strip():
+            requested = tool_name.strip().lower()
+        elif isinstance(query, str) and query.strip():
+            requested = query.strip().lower()
+
+        if not requested:
+            names = [str(item.get("name", "")) for item in catalog if str(item.get("name", ""))]
+            return {
+                "usage": "Call Help with tool_name, for example: Help(tool_name='StartLeaderRun').",
+                "tool_count": len(names),
+                "tools": names,
+                "complex_tools": [
+                    "WriteReplace",
+                    "ReadRecursive",
+                    "RunShell",
+                    "StartSubAgent",
+                    "StartLeaderRun",
+                    "StartBackgroundTurn",
+                    "StartBackgroundSubAgent",
+                    "Review",
+                    "ReadMemory",
+                    "WikiQuery",
+                ],
+            }
+
+        entry = indexed.get(requested)
+        if entry is None:
+            matches = [
+                str(item.get("name", ""))
+                for item in catalog
+                if requested in str(item.get("name", "")).lower()
+            ]
+            return {
+                "found": False,
+                "requested": requested,
+                "matches": matches[:20],
+                "hint": "Use exact tool name from command_catalog, then call Help(tool_name=...).",
+            }
+
+        name = str(entry.get("name", ""))
+        payload: dict[str, Any] = {
+            "found": True,
+            "tool": name,
+            "args": str(entry.get("args", "")),
+            "effect": str(entry.get("effect", "")),
+        }
+        override = self._tool_help_overrides().get(name, {})
+        guidance = override.get("guidance")
+        if isinstance(guidance, list) and guidance:
+            payload["guidance"] = [str(item) for item in guidance]
+        else:
+            payload["guidance"] = [
+                "Use exact arg names from args string.",
+                "Keep scope narrow to reduce latency and token cost.",
+            ]
+        example = override.get("example")
+        if isinstance(example, str) and example.strip():
+            payload["example"] = example.strip()
+        related = override.get("related")
+        if isinstance(related, list) and related:
+            payload["related"] = [str(item) for item in related]
+        return payload
+
+    @staticmethod
+    def _tool_help_overrides() -> dict[str, dict[str, Any]]:
+        return {
+            "Help": {
+                "guidance": [
+                    "Call Help(tool_name='ToolName') to get detailed usage.",
+                    "Call Help() to list available tool names and complex-tool suggestions.",
+                ],
+                "example": "@tool Help {\"tool_name\":\"WriteReplace\"}",
+            },
+            "WriteReplace": {
+                "guidance": [
+                    "Set location narrowly (file or small folder) before replacing.",
+                    "Use max_changes to cap risk on broad regex patterns.",
+                    "Verify with Search or ReadRaw after mutation.",
+                ],
+                "example": "@tool WriteReplace {\"pattern\":\"foo\",\"replacement\":\"bar\",\"location\":\"poecoder/cli.py\",\"max_changes\":2}",
+                "related": ["Search", "ReadRaw", "WriteRaw"],
+            },
+            "ReadRecursive": {
+                "guidance": [
+                    "Seed with the fewest files possible for focused expansion.",
+                    "Use low boundary first and increase only if dependencies are missing.",
+                    "Prefer ReadStruct for fast symbol-level overview before recursive expansion.",
+                ],
+                "example": "@tool ReadRecursive {\"seed_files\":[\"poecoder/cli.py\"],\"boundary\":2}",
+                "related": ["ReadStruct", "ReadRaw", "Search"],
+            },
+            "RunShell": {
+                "guidance": [
+                    "Set danger_level=0 for read-only commands.",
+                    "Set cwd when command must run in a specific directory.",
+                    "Keep commands deterministic and bounded by timeout_s.",
+                ],
+                "example": "@tool RunShell {\"session_id\":\"<session>\",\"command\":\"pwd\",\"danger_level\":0,\"timeout_s\":10}",
+                "related": ["ListFile", "ChangeWorkDir"],
+            },
+            "StartSubAgent": {
+                "guidance": [
+                    "Use readonly perm unless mutation is required.",
+                    "Share only minimal context keys needed for the subtask.",
+                    "Use system_message_modifier to tighten subtask behavior.",
+                ],
+                "example": "@tool StartSubAgent {\"parent_session_id\":\"<session>\",\"model\":\"assistant\",\"perm\":\"readonly\",\"prompt\":\"Summarize failing tests\",\"context_share\":[\"last_user_prompt\"]}",
+                "related": ["ReadSubAgent", "WaitSubAgent", "CancelSubAgent"],
+            },
+            "StartLeaderRun": {
+                "guidance": [
+                    "Define non-overlapping job scopes to avoid edit conflicts.",
+                    "Use verify_command to run final integration checks.",
+                    "Tune max_parallel and per_job_timeout_s for stability.",
+                ],
+                "example": "@tool StartLeaderRun {\"session_id\":\"<session>\",\"goal\":\"Implement feature X with tests\"}",
+                "related": ["ReadLeaderRun", "ListLeaderJobs", "WaitLeaderRun", "CancelLeaderRun"],
+            },
+            "StartBackgroundTurn": {
+                "guidance": [
+                    "Use for long-running prompts that should not block foreground flow.",
+                    "Pass context_keys to keep background context minimal.",
+                    "Read output with ReadTaskOutput.",
+                ],
+                "example": "@tool StartBackgroundTurn {\"session_id\":\"<session>\",\"user_prompt\":\"run deep analysis\"}",
+                "related": ["ListTasks", "ReadTaskOutput", "CancelTask"],
+            },
+            "StartBackgroundSubAgent": {
+                "guidance": [
+                    "Use for long-running delegated subtasks.",
+                    "Prefer readonly perm for analysis-only work.",
+                    "Use wait_timeout_s to bound blocking behavior.",
+                ],
+                "example": "@tool StartBackgroundSubAgent {\"parent_session_id\":\"<session>\",\"model\":\"assistant\",\"perm\":\"readonly\",\"prompt\":\"analyze logs\"}",
+                "related": ["ListTasks", "ReadTaskOutput", "CancelTask"],
+            },
+            "Review": {
+                "guidance": [
+                    "Use targeted prompt and context_keys for high-signal review.",
+                    "Set model/thinking only when defaults are insufficient.",
+                    "Expect findings-first output with severity ordering.",
+                ],
+                "example": "@tool Review {\"session_id\":\"<session>\",\"prompt\":\"review this patch for regressions\"}",
+            },
+            "ReadMemory": {
+                "guidance": [
+                    "Use tags_any and min_priority to cut noise.",
+                    "Set include_content=false when only ids/meta are needed.",
+                    "Use max_content_chars to avoid large payloads.",
+                ],
+                "example": "@tool ReadMemory {\"scope\":\"project\",\"project_id\":\"default\",\"tags_any\":[\"design\"],\"limit\":8}",
+                "related": ["WriteMemory", "EditMemory", "DelMemory"],
+            },
+            "WikiQuery": {
+                "guidance": [
+                    "Use topic to constrain retrieval before large sessions.",
+                    "Disable include_content/include_meta when you only need ids.",
+                    "Set max_content_chars to keep token usage predictable.",
+                ],
+                "example": "@tool WikiQuery {\"project_id\":\"default\",\"query\":\"router\",\"topic\":\"architecture\",\"limit\":5}",
+                "related": ["WikiCompact", "WriteMemory"],
+            },
+            "SetBaseUri": {
+                "guidance": [
+                    "Use provider=poe or provider=openai.",
+                    "Set full provider base URI before refreshing model list.",
+                    "Validate with ListModels or /apistatus afterwards.",
+                ],
+                "example": "@tool SetBaseUri {\"provider\":\"openai\",\"base_uri\":\"https://api.openai.com/v1\"}",
+                "related": ["ListModels"],
+            },
+        }
 
     def _enforce_model_command_policy(self, actor: str, name: str, args: dict[str, Any]) -> None:
         if actor != "model":

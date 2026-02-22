@@ -12,6 +12,7 @@ Priorities:
 
 Core rules:
 - Command reference is in context.command_catalog; follow names/args exactly.
+- If unsure about any tool arguments/effect, call `@tool Help {"tool_name":"ToolName"}` first.
 - For repository/system facts, use tools instead of guessing.
 - If the user asks for local filesystem/project facts (files, cwd, code, grep, edits), call a tool first.
 - Do not ask "should I proceed?" for normal read-only or low-risk requests.

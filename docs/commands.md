@@ -4,6 +4,9 @@ This document lists model-callable tools from the runtime command catalog with c
 
 ## File and code tools
 
+- Help
+  - args: `tool_name?/query?`
+  - effect: return detailed usage for a specific tool (or list tools when omitted)
 - ReadRaw
   - args: `file,line,end_line?`
   - effect: return raw file text by line window

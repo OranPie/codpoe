@@ -275,6 +275,30 @@ def test_tool_listfile_changeworkdir_and_exit(monkeypatch, tmp_path):
     assert exited.json()["result"]["reason"] == "done"
 
 
+def test_tool_help_returns_details_and_matches(monkeypatch, tmp_path):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("POECODER_DB_PATH", str(db))
+
+    from poecoder import api
+
+    api.STATE = api.build_app_state(tmp_path)
+    client = TestClient(api.app)
+
+    detail = client.post("/tools/invoke", json={"name": "Help", "args": {"tool_name": "WriteReplace"}})
+    assert detail.status_code == 200
+    payload = detail.json()["result"]
+    assert payload["found"] is True
+    assert payload["tool"] == "WriteReplace"
+    assert "max_changes" in payload["args"]
+    assert isinstance(payload.get("guidance"), list) and payload["guidance"]
+
+    missing = client.post("/tools/invoke", json={"name": "Help", "args": {"tool_name": "NoSuchTool"}})
+    assert missing.status_code == 200
+    missing_payload = missing.json()["result"]
+    assert missing_payload["found"] is False
+    assert "matches" in missing_payload
+
+
 def test_listmodels_and_changemodel(monkeypatch, tmp_path):
     db = tmp_path / "test.db"
     monkeypatch.setenv("POECODER_DB_PATH", str(db))
@@ -1392,6 +1416,7 @@ def test_model_table_endpoints(monkeypatch, tmp_path):
     catalog = client.get("/tools/catalog")
     assert catalog.status_code == 200
     names = {item["name"] for item in catalog.json()}
+    assert "Help" in names
     assert "Review" in names
     assert "ReadTaskOutput" in names
     assert "StartLeaderRun" in names
