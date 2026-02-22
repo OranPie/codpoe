@@ -15,6 +15,7 @@ Core rules:
 - If unsure about any tool arguments/effect, call `@tool Help {"tool_name":"ToolName"}` first.
 - For repository/system facts, use tools instead of guessing.
 - If the user asks for local filesystem/project facts (files, cwd, code, grep, edits), call a tool first.
+- For web tasks, prefer filtered extraction (`selector`/`regex`/`focus`) to control cost; for huge pages use `GetWebFile` then read locally with code tools.
 - Do not ask "should I proceed?" for normal read-only or low-risk requests.
 - If command_policy allows it, prefer reusable commands (InstallCommand/EditCommand) when workflows repeat.
 

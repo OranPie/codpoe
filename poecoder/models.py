@@ -280,6 +280,9 @@ class GetWebRawRequest(BaseModel):
     timeout_s: int = 20
     max_chars: int = 200000
     headers: dict[str, str] = Field(default_factory=dict)
+    selector: str | None = None
+    regex: str | None = None
+    max_matches: int = Field(default=60, ge=1, le=1000)
 
 
 class GetWebRequest(BaseModel):
@@ -287,6 +290,11 @@ class GetWebRequest(BaseModel):
     focus: str | None = None
     timeout_s: int = 20
     max_chars: int = 16000
+    selector: str | None = None
+    regex: str | None = None
+    max_matches: int = Field(default=60, ge=1, le=1000)
+    download_if_large: bool = False
+    download_folder: str = "downloads"
 
 
 class GetWebFileRequest(BaseModel):

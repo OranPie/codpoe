@@ -35,11 +35,11 @@ This document lists model-callable tools from the runtime command catalog with c
 ## Web tools
 
 - GetWebRaw
-  - args: `url,timeout_s,max_chars,headers?`
-  - effect: fetch raw web payload
+  - args: `url,timeout_s,max_chars,headers?,selector?,regex?,max_matches?`
+  - effect: fetch web payload with optional selector/regex filtering
 - GetWeb
-  - args: `url,focus?,timeout_s,max_chars`
-  - effect: fetch and summarize a page for reasoning
+  - args: `url,focus?,timeout_s,max_chars,selector?,regex?,max_matches?,download_if_large?,download_folder?`
+  - effect: fetch/summarize page with optional filtering and large-page download fallback
 - GetWebFile
   - args: `url,save_as?,folder,overwrite,timeout_s,max_bytes`
   - effect: download remote file

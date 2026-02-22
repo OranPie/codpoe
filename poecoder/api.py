@@ -757,6 +757,9 @@ async def tool_get_web_raw(req: GetWebRawRequest) -> dict[str, Any]:
         timeout_s=req.timeout_s,
         max_chars=req.max_chars,
         headers=req.headers or None,
+        selector=req.selector,
+        regex=req.regex,
+        max_matches=req.max_matches,
     )
 
 
@@ -768,6 +771,11 @@ async def tool_get_web(req: GetWebRequest) -> dict[str, Any]:
         focus=req.focus,
         timeout_s=req.timeout_s,
         max_chars=req.max_chars,
+        selector=req.selector,
+        regex=req.regex,
+        max_matches=req.max_matches,
+        download_if_large=req.download_if_large,
+        download_folder=req.download_folder,
     )
 
 

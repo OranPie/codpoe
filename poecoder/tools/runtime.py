@@ -64,8 +64,8 @@ class ToolRuntime:
             {"name": "ChangeWorkDir", "args": "path", "effect": "Change tool working directory"},
             {"name": "WriteRaw", "args": "file,line,content,append?", "effect": "Insert/append raw text in file"},
             {"name": "WriteReplace", "args": "pattern,replacement,location,max_changes", "effect": "Regex replace in files"},
-            {"name": "GetWebRaw", "args": "url,timeout_s,max_chars,headers?", "effect": "Fetch raw web content"},
-            {"name": "GetWeb", "args": "url,focus?,timeout_s,max_chars", "effect": "Fetch and summarize web page"},
+            {"name": "GetWebRaw", "args": "url,timeout_s,max_chars,headers?,selector?,regex?,max_matches?", "effect": "Fetch web content with optional selector/regex filtering"},
+            {"name": "GetWeb", "args": "url,focus?,timeout_s,max_chars,selector?,regex?,max_matches?,download_if_large?,download_folder?", "effect": "Fetch summarized web content with optional filtering/local-download fallback"},
             {"name": "GetWebFile", "args": "url,save_as?,folder,overwrite,timeout_s,max_bytes", "effect": "Download file from web"},
             {"name": "WriteMemory", "args": "scope,content,tags?,priority,session_id?,project_id?", "effect": "Store memory"},
             {"name": "ReadMemory", "args": "scope?,query?,session_id?,project_id?,tags_any?,min_priority?,include_content?,max_content_chars?,limit", "effect": "Read memory entries with filters"},
@@ -563,6 +563,33 @@ class ToolRuntime:
                 ],
                 "example": "@tool SetBaseUri {\"provider\":\"openai\",\"base_uri\":\"https://api.openai.com/v1\"}",
                 "related": ["ListModels"],
+            },
+            "GetWebRaw": {
+                "guidance": [
+                    "Prefer selector or regex to reduce payload size and token cost.",
+                    "Use max_matches to cap large extraction results.",
+                    "If page is still huge, switch to GetWebFile and analyze locally.",
+                ],
+                "example": "@tool GetWebRaw {\"url\":\"https://example.com\",\"selector\":\"article\",\"max_chars\":8000}",
+                "related": ["GetWeb", "GetWebFile", "ReadRaw", "Search"],
+            },
+            "GetWeb": {
+                "guidance": [
+                    "Use selector/regex/focus together for precise extraction.",
+                    "Set download_if_large=true to save oversized pages for local analysis.",
+                    "Use ReadRaw/Search on downloaded files for iterative extraction.",
+                ],
+                "example": "@tool GetWeb {\"url\":\"https://example.com\",\"focus\":\"release notes\",\"selector\":\"main\",\"max_chars\":6000}",
+                "related": ["GetWebRaw", "GetWebFile", "ReadRaw", "Search"],
+            },
+            "GetWebFile": {
+                "guidance": [
+                    "Use for very large pages/binaries to avoid sending huge payloads to the model.",
+                    "Download first, then inspect with ReadRaw/Search in narrow windows.",
+                    "Keep overwrite=false unless replacing an existing download intentionally.",
+                ],
+                "example": "@tool GetWebFile {\"url\":\"https://example.com/huge.html\",\"folder\":\"downloads\",\"overwrite\":false}",
+                "related": ["GetWeb", "ReadRaw", "Search"],
             },
         }
 

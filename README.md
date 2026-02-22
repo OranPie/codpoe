@@ -45,7 +45,7 @@ PoeCoder is a Python coding assistant runtime with:
 - `/image <path|url>`, `/images`, `/clearimages` for image attachments on the next request.
 - `/review <prompt>` to run reviewer-role analysis (also exposed as tool `Review`).
 
-- Web tools: `GetWebRaw`, `GetWeb`, and `GetWebFile` are exposed via `/tools/invoke` and dedicated API routes.
+- Web tools: `GetWebRaw`, `GetWeb`, and `GetWebFile` are exposed via `/tools/invoke` and dedicated API routes; `GetWebRaw/GetWeb` support selector/regex filtering to cut token cost, and `GetWeb` can auto-download large pages for local reads.
 
 - CLI supports `/balance` to read current Poe point balance.
 - CLI output uses live streamed events (`status`, `tool`, `delta`) for better readability.
