@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import mimetypes
+import re
 import shlex
 import sys
 from getpass import getpass
@@ -67,6 +68,15 @@ class Style:
 
     def error(self, text: str) -> str:
         return self._wrap(text, "31")
+
+    def heading(self, text: str) -> str:
+        return self._wrap(text, "1;34")
+
+    def code(self, text: str) -> str:
+        return self._wrap(text, "35")
+
+    def subtle(self, text: str) -> str:
+        return self._wrap(text, "90")
 
 
 class StreamEventError(httpx.HTTPError):
@@ -180,6 +190,66 @@ class PoeCoderCLI:
             return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             return value
+
+    def _render_markdown_inline(self, text: str) -> str:
+        if not text:
+            return text
+        out = text
+        # Inline code first so other replacements don't break code ranges.
+        out = re.sub(r"`([^`]+)`", lambda m: self.style.code(m.group(1)), out)
+        out = re.sub(r"\*\*([^*]+)\*\*", lambda m: self.style.heading(m.group(1)), out)
+        out = re.sub(r"__([^_]+)__", lambda m: self.style.heading(m.group(1)), out)
+        out = re.sub(r"\*([^*]+)\*", r"\1", out)
+        out = re.sub(r"_([^_]+)_", r"\1", out)
+        return out
+
+    def _render_markdown_line(self, line: str, md_state: dict[str, bool]) -> str:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            md_state["in_code_block"] = not md_state.get("in_code_block", False)
+            return self.style.subtle("```")
+        if md_state.get("in_code_block", False):
+            return self.style.code(line)
+        if not stripped:
+            return ""
+        heading = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if heading:
+            level = len(heading.group(1))
+            text = self._render_markdown_inline(heading.group(2))
+            prefix = "#" * level
+            return self.style.heading(f"{prefix} {text}")
+        quote = re.match(r"^\s*>\s?(.*)$", line)
+        if quote:
+            return self.style.subtle(f"> {self._render_markdown_inline(quote.group(1))}")
+        bullet = re.match(r"^(\s*)([-*+])\s+(.*)$", line)
+        if bullet:
+            indent, marker, body = bullet.groups()
+            return f"{indent}{self.style.info(marker)} {self._render_markdown_inline(body)}"
+        ordered = re.match(r"^(\s*)(\d+)\.\s+(.*)$", line)
+        if ordered:
+            indent, marker, body = ordered.groups()
+            return f"{indent}{self.style.info(marker + '.')} {self._render_markdown_inline(body)}"
+        if re.match(r"^\s*([-*_]\s*){3,}$", line):
+            return self.style.subtle("─" * 24)
+        return self._render_markdown_inline(line)
+
+    def _render_markdown_stream_buffer(self, pending: str, md_state: dict[str, bool]) -> str:
+        while True:
+            idx = pending.find("\n")
+            if idx < 0:
+                return pending
+            line = pending[:idx]
+            print(self._render_markdown_line(line, md_state))
+            pending = pending[idx + 1 :]
+
+    def _render_assistant_text(self, text: str) -> None:
+        md_state = {"in_code_block": False}
+        lines = text.splitlines()
+        if not lines:
+            print()
+            return
+        for line in lines:
+            print(self._render_markdown_line(line, md_state))
 
     def _print_table(self, headers: list[str], rows: list[list[str]]) -> None:
         if not rows:
@@ -1788,6 +1858,8 @@ class PoeCoderCLI:
         saw_delta = False
         tool_idx = 0
         self._last_stream_final = None
+        pending_delta = ""
+        md_state = {"in_code_block": False}
         async with async_http.stream(
             "POST",
             f"{self.state.backend_url}/turns/execute/stream",
@@ -1821,9 +1893,10 @@ class PoeCoderCLI:
                     continue
                 if etype == "delta":
                     if not saw_delta:
-                        print(self.style.title(self._t("stream.assistant")), end="")
+                        print(self.style.title(self._t("stream.assistant")))
                         saw_delta = True
-                    print(data, end="", flush=True)
+                    pending_delta += str(data or "")
+                    pending_delta = self._render_markdown_stream_buffer(pending_delta, md_state)
                     continue
                 if etype == "ask":
                     if isinstance(data, dict):
@@ -1845,6 +1918,9 @@ class PoeCoderCLI:
                 if etype == "final":
                     self._last_stream_final = data if isinstance(data, dict) else {}
                     if saw_delta:
+                        if pending_delta:
+                            print(self._render_markdown_line(pending_delta, md_state))
+                            pending_delta = ""
                         print()
                     self._render_backend_nonstream_result(
                         data if isinstance(data, dict) else {},
@@ -1867,7 +1943,8 @@ class PoeCoderCLI:
             return
         text = str(payload.get("output_text", ""))
         if show_text and text:
-            print(self.style.title(self._t("stream.assistant")) + text)
+            print(self.style.title(self._t("stream.assistant")))
+            self._render_assistant_text(text)
         self._render_tool_events_summary(payload)
         self._render_tool_forwarding(payload)
         model = payload.get("model")
@@ -1906,7 +1983,8 @@ class PoeCoderCLI:
             )
             ask = self._parse_ask_from_text(reply.text)
             if ask is None:
-                print(self.style.title(self._t("stream.assistant")) + reply.text)
+                print(self.style.title(self._t("stream.assistant")))
+                self._render_assistant_text(reply.text)
                 return
             print(self.style.info(self._t("msg.ask_from_model", prompt=str(ask.get("prompt", "")))))
             answer = self._prompt_ask_answer(ask)

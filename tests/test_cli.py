@@ -404,6 +404,28 @@ def test_cli_renders_tool_call_details_with_capped_result_preview(capsys) -> Non
     assert "tool forward mode=auto events=1 compacted=1 tokens=1400->260" in out
 
 
+def test_cli_renders_markdown_in_assistant_output(capsys) -> None:
+    cli = PoeCoderCLI(
+        backend_url="http://127.0.0.1:8765",
+        direct=False,
+        model="assistant",
+        lang="en",
+    )
+    payload = {
+        "session_id": "s1",
+        "model": "assistant",
+        "output_text": "# Title\n- `item`\n```python\nprint('x')\n```",
+        "tool_events": [],
+    }
+    cli._render_backend_nonstream_result(payload)
+    out = capsys.readouterr().out
+    assert "assistant>" in out
+    assert "# Title" in out
+    assert "- item" in out
+    assert "print('x')" in out
+    assert "`item`" not in out
+
+
 def test_cli_balance_prints_openai_details(monkeypatch, capsys) -> None:
     cli = PoeCoderCLI(
         backend_url="http://127.0.0.1:8765",
