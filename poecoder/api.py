@@ -64,7 +64,7 @@ def get_state() -> AppState:
     return STATE
 
 
-app = FastAPI(title="PoeCoder API", version="0.2.0+fix.1")
+app = FastAPI(title="PoeCoder API", version="0.1.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
