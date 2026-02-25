@@ -11,7 +11,7 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class ProviderSecretService:
+class ProviderSecretStore:
     path: Path
 
     def save(self, user_key: str, payload: dict[str, Any]) -> None:
@@ -37,11 +37,12 @@ class ProviderSecretService:
 
     @staticmethod
     def _encrypt(user_key: str, payload: dict[str, Any]) -> dict[str, str | int]:
+        # Keep algorithm compatible with earlier branch secret file format.
         salt = os.urandom(16)
         nonce = os.urandom(16)
         key = hashlib.scrypt(user_key.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
         plain = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-        stream = ProviderSecretService._keystream(key, nonce, len(plain))
+        stream = ProviderSecretStore._keystream(key, nonce, len(plain))
         cipher = bytes(a ^ b for a, b in zip(plain, stream))
         mac = hmac.new(key, salt + nonce + cipher, hashlib.sha256).digest()
         return {
@@ -63,7 +64,7 @@ class ProviderSecretService:
         check = hmac.new(key, salt + nonce + cipher, hashlib.sha256).digest()
         if not hmac.compare_digest(mac, check):
             raise ValueError("invalid user_key or corrupted secret file")
-        stream = ProviderSecretService._keystream(key, nonce, len(cipher))
+        stream = ProviderSecretStore._keystream(key, nonce, len(cipher))
         plain = bytes(a ^ b for a, b in zip(cipher, stream))
         return json.loads(plain.decode("utf-8"))
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -11,48 +12,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from poecoder.app_state import AppState, build_app_state
-from poecoder.models import (
-    ApiLoginRequest,
-    CommandInstallRequest,
-    CommandPatchRequest,
-    ChangeModelRequest,
-    ContextPutRequest,
-    LeaderRunRequest,
-    LeaderWaitRequest,
-    ModelProfileUpsertRequest,
-    MemoryEditRequest,
+from poecoder.backend.models import (
+    ApiKeyRequest,
+    AgentStartRequest,
+    AgentTemplateUpsertRequest,
+    AgentWaitRequest,
+    DownloadUrlsRequest,
+    GetWebRequest,
     MemoryReadRequest,
     MemoryWriteRequest,
     ProviderSecretsLoadRequest,
     ProviderSecretsSaveRequest,
-    ProviderBaseUrlRequest,
-    GetWebRawRequest,
-    GetWebRequest,
-    GetWebFileRequest,
-    ReplaceRequest,
-    SearchRequest,
+    RunShellRequest,
+    SearchArxivRequest,
+    SearchWebRequest,
     SessionCreateRequest,
-    ShellRunRequest,
-    SubagentStartRequest,
-    TmpWriteRequest,
-    TurnRequest,
-    WikiCompactRequest,
-    WikiIngestRequest,
-    WikiQueryRequest,
-    WriteRawRequest,
-    ReadRawRequest,
-    ReadRecursiveRequest,
-    ReadStructRequest,
-    ReadTaskOutputRequest,
-    ReviewRequest,
-    ReviewSettingsRequest,
-    SessionCommandPolicyRequest,
-    SessionThinkDetailsRequest,
-    SessionThinkingRequest,
-    ToolCall,
-    TaskStartSubagentRequest,
+    SessionTurnRequest,
+    WorkflowArxivRequest,
 )
-from poecoder.services.model_clients import ModelProviderError
+from poecoder.backend.prompting import VERSION_TAG
 
 STATE: AppState | None = None
 
@@ -64,7 +42,7 @@ def get_state() -> AppState:
     return STATE
 
 
-app = FastAPI(title="PoeCoder API", version="0.1.3")
+app = FastAPI(title="PoeCoder AgentCore API", version=VERSION_TAG)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -78,62 +56,73 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _as_http_error(exc: ModelProviderError) -> HTTPException:
-    return HTTPException(status_code=exc.http_status, detail=exc.to_payload())
-
-
-@app.post("/auth/poe/login")
-def auth_poe_login(req: ApiLoginRequest) -> dict[str, Any]:
-    state = get_state()
-    api_key = req.api_key.strip()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="api_key is required")
-
-    state.settings.poe_api_key = api_key
-    state.turns.model_client.update_poe(api_key=api_key)
-    state.subagents.model_client.update_poe(api_key=api_key)
-    state.reviews.model_client.update_poe(api_key=api_key)
-    state.model_catalog.api_key = api_key
-    state.usage.api_key = api_key
-    return {"ok": True, "message": "poe api key updated"}
-
-
-@app.post("/auth/openai/login")
-def auth_openai_login(req: ApiLoginRequest) -> dict[str, Any]:
-    state = get_state()
-    api_key = req.api_key.strip()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="api_key is required")
-
-    state.settings.openai_api_key = api_key
-    state.turns.model_client.update_openai(api_key=api_key)
-    state.subagents.model_client.update_openai(api_key=api_key)
-    state.reviews.model_client.update_openai(api_key=api_key)
-    state.model_catalog.update_openai(api_key=api_key)
-    state.model_catalog.list_models(refresh=True)
-    status = state.model_catalog.provider_status().get("openai", {})
-    return {"ok": True, "message": "openai api key updated", "openai": status}
-
-
-@app.get("/auth/status")
-def auth_status() -> dict[str, Any]:
-    state = get_state()
-    state.model_catalog.api_key = state.settings.poe_api_key
-    state.model_catalog.update_openai(
-        api_key=state.settings.openai_api_key,
-        base_url=state.settings.openai_api_url,
-    )
+@app.get("/agent-api/about")
+def about() -> dict[str, Any]:
     return {
-        "poe_api_key_set": bool(state.settings.poe_api_key),
-        "openai_api_key_set": bool(state.settings.openai_api_key),
-        "poe_api_url": state.settings.poe_api_url,
-        "openai_api_url": state.settings.openai_api_url,
-        "catalog": state.model_catalog.provider_status(),
+        "product": "PoeCoder AgentCore",
+        "version_tag": VERSION_TAG,
+        "architecture": "agent-driven",
+        "execution_primitive": "RunShell",
+        "nesting_depth": 2,
     }
 
 
-@app.post("/auth/secrets/save")
-def auth_secrets_save(req: ProviderSecretsSaveRequest) -> dict[str, Any]:
+@app.get("/agent-api/models")
+async def list_models(query: str = "", limit: int = 100, full: bool = False) -> dict[str, Any]:
+    state = get_state()
+    cap = max(1, min(int(limit), 5000))
+    query_raw = query.strip()
+    all_models: list[str] = []
+    for item in state.settings.supported_models:
+        name = str(item).strip()
+        if name and name not in all_models:
+            all_models.append(name)
+
+    source_meta: dict[str, Any] = {"mode": "configured-only"}
+    if full:
+        catalog = await state.model_client.fetch_full_model_catalog(
+            seeded_models=all_models,
+            include_openai_remote=True,
+            remote_limit=5000,
+        )
+        merged = catalog.get("models", [])
+        if isinstance(merged, list):
+            all_models = [str(item) for item in merged if str(item).strip()]
+        source_meta = catalog.get("sources", {}) if isinstance(catalog.get("sources", {}), dict) else {}
+        source_meta["mode"] = "full"
+
+    if query_raw:
+        q = query_raw.lower()
+        models = [item for item in all_models if q in item.lower()]
+    else:
+        models = all_models
+    return {
+        "query": query_raw,
+        "count": len(models),
+        "models": models[:cap],
+        "default_small_model": state.settings.default_small_model,
+        "default_large_model": state.settings.default_large_model,
+        "source_meta": source_meta,
+    }
+
+
+@app.post("/agent-api/auth/poe/login")
+def auth_poe(req: ApiKeyRequest) -> dict[str, Any]:
+    state = get_state()
+    state.settings.poe_api_key = req.api_key.strip()
+    state.model_client.update_poe(api_key=state.settings.poe_api_key)
+    return {"ok": True, "provider": "poe"}
+
+
+@app.post("/agent-api/auth/openai/login")
+def auth_openai(req: ApiKeyRequest) -> dict[str, Any]:
+    state = get_state()
+    state.settings.openai_api_key = req.api_key.strip()
+    state.model_client.update_openai(api_key=state.settings.openai_api_key)
+    return {"ok": True, "provider": "openai"}
+
+
+def _save_provider_secrets(req: ProviderSecretsSaveRequest) -> dict[str, Any]:
     state = get_state()
     payload = {
         "poe_api_key": (req.poe_api_key if req.poe_api_key is not None else state.settings.poe_api_key) or "",
@@ -153,8 +142,7 @@ def auth_secrets_save(req: ProviderSecretsSaveRequest) -> dict[str, Any]:
     return {"ok": True, "path": str(state.provider_secrets.path)}
 
 
-@app.post("/auth/secrets/load")
-def auth_secrets_load(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
+def _load_provider_secrets(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
     state = get_state()
     try:
         payload = state.provider_secrets.load(req.user_key)
@@ -176,657 +164,366 @@ def auth_secrets_load(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
     state.settings.openai_api_key = openai_api_key
     state.settings.poe_api_url = poe_api_url
     state.settings.openai_api_url = openai_api_url
-
-    state.turns.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
-    state.turns.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
-    state.subagents.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
-    state.subagents.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
-    state.reviews.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
-    state.reviews.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
-    state.model_catalog.api_key = poe_api_key
-    state.model_catalog.update_openai(api_key=openai_api_key, base_url=openai_api_url)
-    state.usage.api_key = poe_api_key
+    state.model_client.update_poe(api_key=poe_api_key, base_url=poe_api_url)
+    state.model_client.update_openai(api_key=openai_api_key, base_url=openai_api_url)
 
     return {
         "ok": True,
         "poe_api_key_set": bool(poe_api_key),
         "openai_api_key_set": bool(openai_api_key),
-        "poe_api_url": state.turns.model_client.api_url,
-        "openai_api_url": state.turns.model_client.openai_api_url,
+        "poe_api_url": state.settings.poe_api_url,
+        "openai_api_url": state.settings.openai_api_url,
     }
 
 
-@app.post("/providers/poe/base-url")
-def provider_poe_base_url(req: ProviderBaseUrlRequest) -> dict[str, Any]:
-    state = get_state()
-    base_url = req.base_url.strip()
-    if not base_url:
-        raise HTTPException(status_code=400, detail="base_url is required")
-    state.settings.poe_api_url = base_url
-    state.turns.model_client.update_poe(base_url=base_url)
-    state.subagents.model_client.update_poe(base_url=base_url)
-    state.reviews.model_client.update_poe(base_url=base_url)
-    return {"ok": True, "base_url": state.turns.model_client.api_url}
+@app.post("/agent-api/auth/secrets/save")
+def auth_secrets_save(req: ProviderSecretsSaveRequest) -> dict[str, Any]:
+    return _save_provider_secrets(req)
 
 
-@app.post("/providers/openai/base-url")
-def provider_openai_base_url(req: ProviderBaseUrlRequest) -> dict[str, Any]:
-    state = get_state()
-    base_url = req.base_url.strip()
-    if not base_url:
-        raise HTTPException(status_code=400, detail="base_url is required")
-    state.settings.openai_api_url = base_url
-    state.turns.model_client.update_openai(base_url=base_url)
-    state.subagents.model_client.update_openai(base_url=base_url)
-    state.reviews.model_client.update_openai(base_url=base_url)
-    state.model_catalog.update_openai(base_url=base_url)
-    return {"ok": True, "base_url": state.turns.model_client.openai_api_url}
+@app.post("/agent-api/auth/secrets/load")
+def auth_secrets_load(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
+    return _load_provider_secrets(req)
 
 
-@app.post("/sessions")
+# Backward-compatible aliases for older clients.
+@app.post("/auth/secrets/save")
+def auth_secrets_save_legacy(req: ProviderSecretsSaveRequest) -> dict[str, Any]:
+    return _save_provider_secrets(req)
+
+
+@app.post("/auth/secrets/load")
+def auth_secrets_load_legacy(req: ProviderSecretsLoadRequest) -> dict[str, Any]:
+    return _load_provider_secrets(req)
+
+
+@app.post("/agent-api/sessions")
 def create_session(req: SessionCreateRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.sessions.create(req).model_dump(mode="json")
+    return get_state().engine.create_session(req).model_dump(mode="json")
 
 
-@app.get("/sessions")
-def list_sessions(limit: int = 20, project_id: str | None = None) -> list[dict[str, Any]]:
-    state = get_state()
-    rows = state.sessions.list(project_id=project_id, limit=limit)
-    return [item.model_dump(mode="json") for item in rows]
+@app.get("/agent-api/sessions")
+def list_sessions(limit: int = 20) -> list[dict[str, Any]]:
+    return [item.model_dump(mode="json") for item in get_state().engine.list_sessions(limit=limit)]
 
 
-@app.get("/sessions/{session_id}")
+@app.get("/agent-api/sessions/{session_id}")
 def get_session(session_id: str) -> dict[str, Any]:
-    state = get_state()
     try:
-        return state.sessions.get(session_id).model_dump(mode="json")
+        return get_state().engine.get_session(session_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.put("/sessions/{session_id}/context")
-def put_context(session_id: str, req: ContextPutRequest) -> dict[str, Any]:
-    state = get_state()
+@app.get("/agent-api/sessions/{session_id}/messages")
+def list_session_messages(session_id: str, limit: int = 30) -> list[dict[str, Any]]:
     try:
-        state.sessions.get(session_id)
-        state.sessions.put_context(session_id, req.key, req.value, scope=req.scope, ttl_seconds=req.ttl_seconds)
-        return {"ok": True}
+        return [item.model_dump(mode="json") for item in get_state().engine.list_session_messages(session_id, limit=limit)]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/sessions/{session_id}/context")
-def get_context(session_id: str, keys: str | None = None) -> dict[str, Any]:
-    state = get_state()
+@app.post("/agent-api/sessions/{session_id}/turn")
+async def session_turn(session_id: str, req: SessionTurnRequest) -> dict[str, Any]:
     try:
-        state.sessions.get(session_id)
-        key_list = [item.strip() for item in (keys or "").split(",") if item.strip()] or None
-        return state.sessions.get_context(session_id, key_list)
+        return (await get_state().engine.run_session_turn(session_id, req)).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+def _sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
 
 
-@app.get("/models")
-def list_models(refresh: bool = False) -> dict[str, Any]:
-    state = get_state()
-    models = state.model_catalog.list_models(refresh=refresh)
-    return {"models": models, "status": state.model_catalog.provider_status()}
-
-
-@app.get("/models/table")
-def list_model_table() -> list[dict[str, Any]]:
-    state = get_state()
-    state.model_profiles.ensure_seeded(state.model_catalog.list_models(refresh=False))
-    return state.model_profiles.list()
-
-
-@app.put("/models/table/{model}")
-def upsert_model_table(model: str, req: ModelProfileUpsertRequest) -> dict[str, Any]:
-    state = get_state()
-    payload = req.model_dump(mode="json")
-    return state.model_profiles.upsert(
-        model=model,
-        strategy=payload["strategy"],
-        best_for=payload["best_for"],
-        speed_tier=payload["speed_tier"],
-        quality_tier=payload["quality_tier"],
-        cost_tier=payload["cost_tier"],
-        max_context_hint=payload["max_context_hint"],
-    )
-
-
-@app.post("/sessions/{session_id}/change-model")
-def change_model(session_id: str, req: ChangeModelRequest) -> dict[str, Any]:
+@app.post("/agent-api/sessions/{session_id}/turn/stream")
+async def session_turn_stream(session_id: str, req: SessionTurnRequest) -> StreamingResponse:
     state = get_state()
     try:
-        state.model_catalog.ensure_supported(req.model)
-        updated = state.sessions.change_model(session_id, req.model)
-        return updated.model_dump(mode="json")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.store.get_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-
-@app.post("/sessions/{session_id}/thinking")
-def session_update_thinking(session_id: str, req: SessionThinkingRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        updated = state.sessions.update_thinking(session_id, req.thinking_level, req.thinking_budget)
-        return updated.model_dump(mode="json")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/sessions/{session_id}/think-details")
-def session_update_think_details(session_id: str, req: SessionThinkDetailsRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        updated = state.sessions.update_think_details(session_id, req.show_think_details)
-        return updated.model_dump(mode="json")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/sessions/{session_id}/command-policy")
-def session_update_command_policy(session_id: str, req: SessionCommandPolicyRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        updated = state.sessions.update_command_policy(
-            session_id=session_id,
-            allow_create=req.allow_model_command_create,
-            encourage_create=req.encourage_model_command_create,
-        )
-        return updated.model_dump(mode="json")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-@app.post("/turns/execute")
-async def turn_execute(req: TurnRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        result = await state.turns.execute(req)
-        return result.model_dump(mode="json")
-    except ModelProviderError as exc:
-        raise _as_http_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/review")
-async def review(req: ReviewRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return await state.reviews.run(req)
-    except ModelProviderError as exc:
-        raise _as_http_error(exc) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/review/settings")
-def review_settings_get() -> dict[str, Any]:
-    return get_state().reviews.get_settings()
-
-
-@app.post("/review/settings")
-def review_settings_update(req: ReviewSettingsRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        model = req.model
-        if model:
-            state.model_catalog.ensure_supported(model)
-        return state.reviews.update_settings(
-            model=model,
-            thinking_level=req.thinking_level,
-            thinking_budget=req.thinking_budget,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/turns/execute/stream")
-async def turn_execute_stream(req: TurnRequest) -> StreamingResponse:
-    state = get_state()
-
-    async def event_gen():
-        try:
-            async for event in state.turns.execute_stream(req):
-                payload = json.dumps(event, ensure_ascii=True)
-                yield f"data: {payload}\n\n"
-        except ModelProviderError as exc:
-            payload = json.dumps({"type": "error", "data": exc.to_payload()}, ensure_ascii=True)
-            yield f"data: {payload}\n\n"
-        except Exception as exc:  # noqa: BLE001
-            payload = json.dumps(
-                {
-                    "type": "error",
-                    "data": {
-                        "provider": "backend",
-                        "code": "stream_internal_error",
-                        "detail": str(exc),
-                        "retryable": True,
-                    },
-                },
-                ensure_ascii=True,
+    async def event_iter() -> AsyncIterator[str]:
+        state.store.add_session_message(session_id, "user", req.prompt)
+        run = state.runtime.start(
+            AgentStartRequest(
+                name="conversation-root",
+                goal=req.prompt,
+                session_id=session_id,
+                model=req.model,
+                scope=["."],
+                max_steps=6,
             )
-            yield f"data: {payload}\n\n"
+        )
+        yield _sse("started", {"session_id": session_id, "agent_id": run.id})
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+        emitted = 0
+        while True:
+            await asyncio.sleep(0.25)
+            payload = state.runtime.get(run.id, event_limit=1200)
+            agent = payload.get("agent", {})
+            events = payload.get("events", [])
+            if not isinstance(events, list):
+                events = []
+
+            while emitted < len(events):
+                item = events[emitted]
+                emitted += 1
+                if not isinstance(item, dict):
+                    continue
+                event_type = str(item.get("event_type", "event"))
+                event_payload = item.get("payload", {})
+                if not isinstance(event_payload, dict):
+                    event_payload = {}
+
+                if event_type == "model_action":
+                    parsed = event_payload.get("parsed", {})
+                    if not isinstance(parsed, dict):
+                        parsed = {}
+                    yield _sse(
+                        "action",
+                        {
+                            "action": str(parsed.get("action", "")),
+                            "step": event_payload.get("step"),
+                            "progress": str(parsed.get("progress", "")),
+                            "detail": str(parsed.get("detail", "")),
+                            "next": str(parsed.get("next", "")),
+                            "question": str(parsed.get("question", "")),
+                            "input_mode": str(parsed.get("input_mode", "")),
+                            "estimated_cost_usd": event_payload.get("estimated_cost_usd", 0.0),
+                        },
+                    )
+                elif event_type == "runshell":
+                    yield _sse(
+                        "runshell",
+                        {
+                            "command": str(event_payload.get("command", "")),
+                            "exit_code": event_payload.get("exit_code"),
+                            "allowed": bool(event_payload.get("allowed", True)),
+                            "duration_ms": event_payload.get("duration_ms", 0),
+                            "progress": str(event_payload.get("progress", "")),
+                            "stdout_preview": event_payload.get("stdout_preview", []),
+                            "stderr_preview": event_payload.get("stderr_preview", []),
+                        },
+                    )
+                elif event_type == "spawn":
+                    yield _sse(
+                        "spawn",
+                        {
+                            "child_agent_id": str(event_payload.get("child_agent_id", "")),
+                            "child_status": str(event_payload.get("child_status", "")),
+                            "progress": str(event_payload.get("progress", "")),
+                            "child_command_summary": str(event_payload.get("child_command_summary", "")),
+                            "child_output": str(event_payload.get("child_output", "")),
+                        },
+                    )
+                elif event_type == "ask":
+                    yield _sse("ask", event_payload)
+                elif event_type == "note":
+                    yield _sse("note", event_payload)
+                elif event_type == "tool_define":
+                    yield _sse("tool_define", event_payload)
+                elif event_type == "tool_call":
+                    yield _sse("tool_call", event_payload)
+
+            status = str(agent.get("status", ""))
+            if status in {"completed", "failed", "cancelled"}:
+                output = str(agent.get("final_output", "")).strip() or str(agent.get("error", "")).strip()
+                state.store.add_session_message(session_id, "assistant", output)
+                metrics = state.engine.summarize_agent_events(events)
+                ask_payload = None
+                for item in reversed(events):
+                    if isinstance(item, dict) and str(item.get("event_type", "")) == "ask":
+                        payload_item = item.get("payload", {})
+                        if isinstance(payload_item, dict):
+                            ask_payload = payload_item
+                        break
+                yield _sse(
+                    "final",
+                    {
+                        "session_id": session_id,
+                        "agent_id": run.id,
+                        "status": status,
+                        "output": output,
+                        "agent_metrics": metrics,
+                        "ask": ask_payload,
+                    },
+                )
+                return
+
+    return StreamingResponse(event_iter(), media_type="text/event-stream")
 
 
+@app.post("/agent-api/agents/templates/register")
+def register_template(req: AgentTemplateUpsertRequest) -> dict[str, Any]:
+    return get_state().engine.upsert_template(req).model_dump(mode="json")
 
 
-@app.post("/tasks/turns/start")
-async def task_start_turn(req: TurnRequest) -> dict[str, Any]:
-    state = get_state()
+@app.get("/agent-api/agents/templates")
+def list_templates() -> list[dict[str, Any]]:
+    return [item.model_dump(mode="json") for item in get_state().engine.list_templates()]
+
+
+@app.post("/agent-api/agents/start")
+async def start_agent(req: AgentStartRequest) -> dict[str, Any]:
     try:
-        task = await state.tasks.start_turn(req)
-        return task.model_dump(mode="json")
+        if req.parent_agent_id and req.session_id is None:
+            # inherit via parent run implicitly, but allow direct calls without session.
+            pass
+        return get_state().engine.start_agent(req).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/tasks/subagents/start")
-async def task_start_subagent(req: TaskStartSubagentRequest) -> dict[str, Any]:
-    state = get_state()
+@app.get("/agent-api/agents/{agent_id}")
+def get_agent(agent_id: str, event_limit: int = 200) -> dict[str, Any]:
     try:
-        task = await state.tasks.start_subagent(req)
-        return task.model_dump(mode="json")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return get_state().engine.get_agent(agent_id, event_limit=event_limit)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/tasks")
-def task_list(limit: int = 50, state: str | None = None, task_type: str | None = None) -> list[dict[str, Any]]:
-    store = get_state().tasks
-    tasks = store.list(limit=limit, state=state, task_type=task_type)
-    return [item.model_dump(mode="json") for item in tasks]
-
-
-@app.get("/tasks/{task_id}")
-def task_get(task_id: str) -> dict[str, Any]:
-    store = get_state().tasks
+@app.post("/agent-api/agents/{agent_id}/cancel")
+def cancel_agent(agent_id: str) -> dict[str, Any]:
     try:
-        return store.get(task_id).model_dump(mode="json")
+        return get_state().engine.cancel_agent(agent_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/tasks/{task_id}/output")
-def task_get_output(task_id: str) -> dict[str, Any]:
-    store = get_state().tasks
+@app.post("/agent-api/agents/{agent_id}/wait")
+async def wait_agent(agent_id: str, req: AgentWaitRequest) -> dict[str, Any]:
     try:
-        return store.read_output(task_id)
+        return await get_state().engine.wait_agent(agent_id, timeout_s=req.timeout_s)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/tasks/{task_id}/cancel")
-def task_cancel(task_id: str) -> dict[str, Any]:
-    store = get_state().tasks
+@app.get("/agent-api/agents/{agent_id}/events")
+def get_agent_events(agent_id: str, limit: int = 200) -> list[dict[str, Any]]:
     try:
-        return store.cancel(task_id).model_dump(mode="json")
+        return get_state().engine.get_agent_events(agent_id, limit=limit)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/leader/start")
-async def leader_start(req: LeaderRunRequest) -> dict[str, Any]:
-    state = get_state()
+@app.post("/agent-api/run-shell")
+async def run_shell(req: RunShellRequest) -> dict[str, Any]:
+    result = await get_state().shell.run(req)
+    return result.model_dump(mode="json")
+
+
+@app.post("/agent-api/memory/user/write")
+def memory_user_write(req: MemoryWriteRequest) -> dict[str, Any]:
+    if req.scope != "user":
+        raise HTTPException(status_code=400, detail="scope must be user")
+    return {"id": get_state().engine.write_memory(req)}
+
+
+@app.post("/agent-api/memory/user/read")
+def memory_user_read(req: MemoryReadRequest) -> list[dict[str, Any]]:
+    if req.scope != "user":
+        raise HTTPException(status_code=400, detail="scope must be user")
+    return [item.model_dump(mode="json") for item in get_state().engine.read_memory(req)]
+
+
+@app.post("/agent-api/memory/session/write")
+def memory_session_write(req: MemoryWriteRequest) -> dict[str, Any]:
+    if req.scope != "session":
+        raise HTTPException(status_code=400, detail="scope must be session")
+    if not req.session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for session memory")
+    return {"id": get_state().engine.write_memory(req)}
+
+
+@app.post("/agent-api/memory/session/read")
+def memory_session_read(req: MemoryReadRequest) -> list[dict[str, Any]]:
+    if req.scope != "session":
+        raise HTTPException(status_code=400, detail="scope must be session")
+    if not req.session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for session memory")
+    return [item.model_dump(mode="json") for item in get_state().engine.read_memory(req)]
+
+
+@app.post("/agent-api/workflows/arxiv")
+async def workflow_arxiv(req: WorkflowArxivRequest) -> dict[str, Any]:
     try:
-        return state.leader.start(req).model_dump(mode="json")
+        return (await get_state().engine.run_arxiv_workflow(req)).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/leader/{run_id}")
-def leader_read(run_id: str) -> dict[str, Any]:
-    state = get_state()
+@app.post("/agent-api/research/search-web")
+async def research_search_web(req: SearchWebRequest) -> dict[str, Any]:
     try:
-        return state.leader.read(run_id).model_dump(mode="json")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/leader/{run_id}/jobs")
-def leader_jobs(run_id: str) -> list[dict[str, Any]]:
-    state = get_state()
-    try:
-        return [item.model_dump(mode="json") for item in state.leader.list_jobs(run_id)]
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/leader/{run_id}/wait")
-async def leader_wait(run_id: str, req: LeaderWaitRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return (await state.leader.wait(run_id, timeout_s=req.timeout_s)).model_dump(mode="json")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/leader/{run_id}/cancel")
-def leader_cancel(run_id: str) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return state.leader.cancel(run_id).model_dump(mode="json")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/memory/write")
-def memory_write(req: MemoryWriteRequest) -> dict[str, Any]:
-    state = get_state()
-    return {"id": state.memories.write(req)}
-
-
-@app.post("/memory/read")
-def memory_read(req: MemoryReadRequest) -> list[dict[str, Any]]:
-    state = get_state()
-    return [item.model_dump(mode="json") for item in state.memories.read(req)]
-
-
-@app.post("/memory/edit")
-def memory_edit(req: MemoryEditRequest) -> dict[str, Any]:
-    state = get_state()
-    return {"changed": state.memories.edit(req)}
-
-
-@app.post("/wiki/ingest")
-def wiki_ingest(req: WikiIngestRequest) -> dict[str, Any]:
-    state = get_state()
-    return {"id": state.wiki.ingest(req.project_id, req.topic, req.content, req.source)}
-
-
-@app.post("/wiki/query")
-def wiki_query(req: WikiQueryRequest) -> list[dict[str, Any]]:
-    state = get_state()
-    return state.wiki.query(
-        project_id=req.project_id,
-        query=req.query,
-        limit=req.limit,
-        topic=req.topic,
-        include_content=req.include_content,
-        include_meta=req.include_meta,
-        max_content_chars=req.max_content_chars,
-    )
-
-
-@app.post("/wiki/compact")
-def wiki_compact(req: WikiCompactRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.wiki.compact(req.project_id)
-
-
-
-
-@app.get("/usage/current_balance")
-def usage_current_balance() -> dict[str, Any]:
-    state = get_state()
-    payload: dict[str, Any] = {}
-    catalog_status = state.model_catalog.provider_status()
-    try:
-        poe_balance = state.usage.get_current_balance()
-        payload.update(poe_balance)
-        payload["poe"] = poe_balance
+        return await get_state().web_tools.search_web(
+            query=req.query,
+            limit=req.limit,
+            timeout_s=req.timeout_s,
+            max_snippet_chars=req.max_snippet_chars,
+        )
     except Exception as exc:  # noqa: BLE001
-        payload["poe"] = {"error": str(exc)}
-    models = state.model_catalog.list_models(refresh=False)
-    openai_models = [name for name in models if isinstance(name, str) and name.startswith("openai/")]
-    payload["openai"] = {
-        "api_key_configured": bool(state.settings.openai_api_key),
-        "base_url": state.settings.openai_api_url,
-        "model_count": len(openai_models),
-        "models_preview": openai_models[:10],
-        "last_error": (
-            catalog_status.get("openai", {}).get("last_error")
-            if isinstance(catalog_status.get("openai"), dict)
-            else None
-        ),
-    }
-    return payload
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-@app.post("/commands/install")
-def command_install(req: CommandInstallRequest) -> dict[str, Any]:
-    state = get_state()
+
+@app.post("/agent-api/research/search-arxiv")
+async def research_search_arxiv(req: SearchArxivRequest) -> dict[str, Any]:
     try:
-        return state.commands.install(
-            name=req.name,
-            definition=req.definition,
-            runtime=req.runtime,
-            args_schema=req.args_schema,
-            effect_schema=req.effect_schema,
-            capabilities=req.capabilities,
-            source=req.source,
-            signature=req.signature,
+        return await get_state().web_tools.search_arxiv(
+            query=req.query,
+            max_results=req.max_results,
+            timeout_s=req.timeout_s,
         )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/commands")
-def command_list() -> list[dict[str, Any]]:
-    state = get_state()
-    return state.commands.list()
-
-
-@app.patch("/commands/{name}")
-def command_patch(name: str, req: CommandPatchRequest) -> dict[str, Any]:
-    state = get_state()
+@app.post("/agent-api/research/get-web")
+async def research_get_web(req: GetWebRequest) -> dict[str, Any]:
     try:
-        return state.commands.patch(name, req.model_dump(exclude_none=True))
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-@app.delete("/commands/{name}")
-def command_delete(name: str) -> dict[str, bool]:
-    state = get_state()
-    return {"deleted": state.commands.delete(name)}
-
-
-@app.post("/subagents/start")
-def subagent_start(req: SubagentStartRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return state.subagents.start(
-            parent_session_id=req.parent_session_id,
-            model=req.model,
-            perm=req.perm,
-            prompt=req.prompt,
-            context_share=req.context_share,
-            images=req.images,
-            system_message_modifier=req.system_message_modifier,
+        return await get_state().web_tools.get_web(
+            url=req.url,
+            focus=req.focus,
+            timeout_s=req.timeout_s,
+            max_chars=req.max_chars,
+            selector=req.selector,
+            regex=req.regex,
+            max_matches=req.max_matches,
+            download_if_large=req.download_if_large,
+            download_folder=req.download_folder,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/subagents/{agent_id}")
-def subagent_read(agent_id: str) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return state.subagents.read(agent_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/subagents/{agent_id}/wait")
-async def subagent_wait(agent_id: str, timeout_s: int = 60) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return await state.subagents.wait(agent_id, timeout_s)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/subagents/{agent_id}/cancel")
-def subagent_cancel(agent_id: str) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return state.subagents.cancel(agent_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/shell/run")
-async def shell_run(req: ShellRunRequest) -> dict[str, Any]:
-    state = get_state()
-    try:
-        return (await state.shell.run(req.session_id, req.command, req.danger_level, req.cwd, req.timeout_s)).model_dump(mode="json")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-
-
-@app.post("/tools/invoke")
-async def tool_invoke(req: ToolCall, actor: str = "user") -> dict[str, Any]:
-    state = get_state()
-    try:
-        result = await state.tools.invoke(actor=actor, name=req.name, args=req.args)
-        return {"ok": True, "result": result}
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/tools/catalog")
-def tool_catalog() -> list[dict[str, Any]]:
-    state = get_state()
-    return state.tools.command_catalog()
-
-@app.post("/tools/read_raw")
-def tool_read_raw(req: ReadRawRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.tools.code_tools.read_raw(req.file, req.line, req.end_line)
-
-
-@app.post("/tools/read_struct")
-def tool_read_struct(req: ReadStructRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.tools.code_tools.read_struct(req.target, req.language, req.dependency_depth)
-
-
-@app.post("/tools/read_recursive")
-def tool_read_recursive(req: ReadRecursiveRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.tools.code_tools.read_recursive(req.seed_files, req.boundary)
-
-
-@app.post("/tools/search")
-def tool_search(req: SearchRequest) -> list[dict[str, Any]]:
-    state = get_state()
-    return state.tools.code_tools.search(req.pattern, req.file_pattern, req.boundary, req.root)
-
-
-@app.post("/tools/write_raw")
-def tool_write_raw(req: WriteRawRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.tools.code_tools.write_raw(req.file, req.line, req.content, req.append)
-
-
-@app.post("/tools/write_replace")
-def tool_write_replace(req: ReplaceRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.tools.code_tools.write_replace(req.pattern, req.replacement, req.location, req.max_changes)
-
-
-
-
-
-
-@app.get("/tools/get_balance")
-def tool_get_balance() -> dict[str, Any]:
-    state = get_state()
-    try:
-        return state.usage.get_current_balance()
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-@app.post("/tools/get_web_raw")
-async def tool_get_web_raw(req: GetWebRawRequest) -> dict[str, Any]:
-    state = get_state()
-    return await state.tools.web_tools.get_web_raw(
-        url=req.url,
-        timeout_s=req.timeout_s,
-        max_chars=req.max_chars,
-        headers=req.headers or None,
-        selector=req.selector,
-        regex=req.regex,
-        max_matches=req.max_matches,
-    )
 
-
-@app.post("/tools/get_web")
-async def tool_get_web(req: GetWebRequest) -> dict[str, Any]:
-    state = get_state()
-    return await state.tools.web_tools.get_web(
-        url=req.url,
-        focus=req.focus,
-        timeout_s=req.timeout_s,
-        max_chars=req.max_chars,
-        selector=req.selector,
-        regex=req.regex,
-        max_matches=req.max_matches,
-        download_if_large=req.download_if_large,
-        download_folder=req.download_folder,
-    )
-
-
-@app.post("/tools/get_web_file")
-async def tool_get_web_file(req: GetWebFileRequest) -> dict[str, Any]:
-    state = get_state()
-    return await state.tools.web_tools.get_web_file(
-        url=req.url,
-        save_as=req.save_as,
-        folder=req.folder,
-        overwrite=req.overwrite,
-        timeout_s=req.timeout_s,
-        max_bytes=req.max_bytes,
-    )
-
-
-@app.post("/tools/read_task_output")
-def tool_read_task_output(req: ReadTaskOutputRequest) -> dict[str, Any]:
-    state = get_state()
+@app.post("/agent-api/research/download-urls")
+async def research_download_urls(req: DownloadUrlsRequest) -> dict[str, Any]:
     try:
-        return state.tasks.read_output(req.task_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-@app.post("/tools/tmp_write")
-def tool_tmp_write(req: TmpWriteRequest) -> dict[str, Any]:
-    state = get_state()
-    return state.tools._tmp_write(req.name, req.content, req.ttl_seconds)
+        return await get_state().web_tools.download_urls(
+            urls=req.urls,
+            folder=req.folder,
+            overwrite=req.overwrite,
+            timeout_s=req.timeout_s,
+            max_bytes=req.max_bytes,
+            max_files=req.max_files,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def run() -> None:
-    parser = argparse.ArgumentParser(description="Run PoeCoder API")
+    parser = argparse.ArgumentParser(description="Run PoeCoder AgentCore API")
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
 
     state = get_state()
-    host = args.host or state.settings.host
-    port = args.port or state.settings.port
-    uvicorn.run("poecoder.api:app", host=host, port=port, reload=False)
+    uvicorn.run(
+        "poecoder.api:app",
+        host=args.host or state.settings.host,
+        port=args.port or state.settings.port,
+        reload=False,
+    )
 
 
 if __name__ == "__main__":

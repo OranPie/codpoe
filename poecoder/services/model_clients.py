@@ -84,6 +84,60 @@ class PoeModelClient:
             self.openai_api_url = self._normalize_openai_api_url(base_url)
         self._openai_clients.clear()
 
+    async def fetch_full_model_catalog(
+        self,
+        *,
+        seeded_models: list[str] | None = None,
+        include_openai_remote: bool = True,
+        remote_limit: int = 5000,
+    ) -> dict[str, Any]:
+        local: list[str] = []
+        for item in seeded_models or []:
+            name = str(item).strip()
+            if name and name not in local:
+                local.append(name)
+        for item in sorted(self.openai_models):
+            name = f"openai/{item}"
+            if name not in local:
+                local.append(name)
+
+        openai_remote: list[str] = []
+        remote_error = ""
+        if include_openai_remote and self.openai_api_key:
+            try:
+                client = self._get_openai_client()
+                response = await client.models.list()
+                data = getattr(response, "data", None) or []
+                for item in data:
+                    model_id = ""
+                    if isinstance(item, dict):
+                        model_id = str(item.get("id", "")).strip()
+                    else:
+                        model_id = str(getattr(item, "id", "")).strip()
+                    if not model_id:
+                        continue
+                    name = f"openai/{model_id}"
+                    if name not in openai_remote:
+                        openai_remote.append(name)
+                    if len(openai_remote) >= max(1, remote_limit):
+                        break
+            except Exception as exc:  # noqa: BLE001
+                remote_error = str(exc)
+
+        merged = list(local)
+        for item in openai_remote:
+            if item not in merged:
+                merged.append(item)
+
+        return {
+            "models": merged,
+            "sources": {
+                "seeded_count": len(local),
+                "openai_remote_count": len(openai_remote),
+                "openai_remote_error": remote_error,
+            },
+        }
+
     async def chat(
         self,
         model: str,
@@ -108,8 +162,11 @@ class PoeModelClient:
                 events.append({"raw_response": partial.raw_response})
             elif partial.data is not None:
                 events.append({"data": partial.data})
-
-        return ModelReply(text="".join(chunks), raw={"events": events})
+        raw: dict[str, Any] = {"events": events}
+        usage = self._extract_poe_usage(events)
+        if usage:
+            raw["usage"] = usage
+        return ModelReply(text="".join(chunks), raw=raw)
 
     async def chat_stream(
         self,
@@ -454,6 +511,44 @@ class PoeModelClient:
             "completion_tokens": completion,
             "total_tokens": total,
         }
+
+    @staticmethod
+    def _extract_poe_usage(events: list[dict[str, Any]]) -> dict[str, int]:
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            usage = PoeModelClient._find_usage_payload(event)
+            if usage:
+                return usage
+        return {}
+
+    @staticmethod
+    def _find_usage_payload(node: Any) -> dict[str, int]:
+        if isinstance(node, dict):
+            prompt_val = node.get("prompt_tokens", node.get("input_tokens"))
+            completion_val = node.get("completion_tokens", node.get("output_tokens"))
+            total_val = node.get("total_tokens")
+            if prompt_val is not None or completion_val is not None or total_val is not None:
+                prompt = int(prompt_val or 0)
+                completion = int(completion_val or 0)
+                total = int(total_val or (prompt + completion))
+                if prompt > 0 or completion > 0 or total > 0:
+                    return {
+                        "prompt_tokens": prompt,
+                        "completion_tokens": completion,
+                        "total_tokens": total,
+                    }
+            for value in node.values():
+                usage = PoeModelClient._find_usage_payload(value)
+                if usage:
+                    return usage
+            return {}
+        if isinstance(node, list):
+            for value in node:
+                usage = PoeModelClient._find_usage_payload(value)
+                if usage:
+                    return usage
+        return {}
 
     @staticmethod
     def _extract_text_part(part: Any) -> str:

@@ -1,85 +1,106 @@
-# PoeCoder
+# PoeCoder AgentCore
 
-PoeCoder is a Python coding assistant runtime with:
-- A FastAPI backend that manages sessions, memory, wiki, tools, and subagents.
-- Poe model calls via `fastapi-poe` (`https://creator.poe.com/api-reference/overview`).
-- Optional OpenAI model calls via official `openai` Python SDK.
-- A CLI with Codex-like turn loop and streaming output.
-- Dual model path: backend-proxy model calls or direct model calls from CLI.
+Version tag: `v§-a0.0.2`
 
-## Release advisory
+This branch is a full rewrite to an **agent-driven backend**:
+- Agent is core.
+- Session is conversation continuity.
+- Memory (`user` / `session`) is persistent context.
+- Execution primitive is only **RunShell**.
 
-- `v0.1.1` is now **unsuggested** due to known performance issues, higher token/cost overhead, and stability problems.
-- Use `v0.1.2+` for improved turn stability, context efficiency, and tool-response handling.
-- Docs index: `docs/README.md`
+## Core Ideas
 
-## Quick start
+- Runtime creates small, precise agents on demand.
+- Complex tasks are solved by nested agents (max depth: 2).
+- Built-in global templates:
+  - `shell-reader`
+  - `python-runner`
+  - `wget-downloader`
+  - `web-searcher`
 
-1. Install dependencies:
-   - `python -m pip install -e .`
-2. Run API:
-   - `poecoder-api`
-3. Run CLI:
-   - `poecoder`
+## API
 
-## Notes
+All new routes are under `/agent-api`.
 
-- Storage uses SQLite at `~/.poecoder/poecoder.db` by default.
-- Shell execution is policy-gated by danger level.
-- Context is mode-based: coding clears per turn, chat/planning/leader keeps a short window.
+- Sessions:
+  - `POST /agent-api/sessions`
+  - `GET /agent-api/sessions`
+  - `GET /agent-api/sessions/{session_id}`
+  - `POST /agent-api/sessions/{session_id}/turn`
+  - `POST /agent-api/sessions/{session_id}/turn/stream` (SSE progress stream)
+  - `GET /agent-api/sessions/{session_id}/messages`
+  - turn responses may include `ask` payload for clarification (text/single/multiple choice)
+- Models:
+  - `GET /agent-api/models?query=<optional>&limit=<optional>&full=<true|false>`
+    - `full=true` fetches full catalog (configured + OpenAI remote list when key exists)
+- Agents:
+  - `POST /agent-api/agents/start`
+  - `GET /agent-api/agents/{agent_id}`
+  - `GET /agent-api/agents/{agent_id}/events`
+  - `POST /agent-api/agents/{agent_id}/cancel`
+  - `POST /agent-api/agents/{agent_id}/wait`
+- Templates:
+  - `POST /agent-api/agents/templates/register`
+  - `GET /agent-api/agents/templates`
+- Memory:
+  - `POST /agent-api/memory/user/write`
+  - `POST /agent-api/memory/user/read`
+  - `POST /agent-api/memory/session/write`
+  - `POST /agent-api/memory/session/read`
+- Shell:
+  - `POST /agent-api/run-shell`
+- Auth:
+  - `POST /agent-api/auth/poe/login` with body `{"api_key":"..."}`
+  - `POST /agent-api/auth/openai/login` with body `{"api_key":"..."}`
+  - `POST /agent-api/auth/secrets/save` with body `{"user_key":"...","poe_api_key":"...","openai_api_key":"..."}`
+  - `POST /agent-api/auth/secrets/load` with body `{"user_key":"..."}`
+  - legacy aliases kept for migration: `/auth/secrets/save`, `/auth/secrets/load`
+- Workflow:
+  - `POST /agent-api/workflows/arxiv`
+    - staged agents: `init -> arxiv-finder -> arxiv-download -> final-report`
+    - stage outputs are persisted into session memory under `workflow.arxiv.*`
+- Research (built-in parser to reduce token pressure):
+  - `POST /agent-api/research/search-web`
+  - `POST /agent-api/research/search-arxiv`
+  - `POST /agent-api/research/get-web`
+  - `POST /agent-api/research/download-urls`
 
+## Quick Start
 
-## Notable CLI Commands
+```bash
+poecoder-api
+```
 
-- `/listmodels [query]` to inspect supported models with optional substring filter.
-- `/modeltable` to inspect/edit model strategy profiles used for auto model choice.
-- `/changemodel <name|auto>` to switch main model during a session.
-- `/login [api_key]` to set/update Poe API key (prompts securely when omitted).
-- `/loginopenai [api_key]` to set/update OpenAI API key.
-- `/sessions [limit]` and `/resume <session_id|index>` to list and resume backend sessions.
-- OpenAI models should be selected with `openai/<model>` prefix (avoids name collisions with Poe model names).
-- `/plan` to switch to planning mode with planning-focused system message.
-- `/thinking <quick|balanced|deep> [budget]` to control model reasoning depth/token budget hints.
-- `/thinkdetails <on|off>` to control whether model progress/thinking detail text is encouraged in outputs.
-- `/commandpolicy <allow|deny> [encourage|noencourage]` to control model self-command creation autonomy.
-- `/image <path|url>`, `/images`, `/clearimages` for image attachments on the next request.
-- `/review <prompt>` to run reviewer-role analysis (also exposed as tool `Review`).
+Then:
 
-- Web tools: `GetWebRaw`, `GetWeb`, and `GetWebFile` are exposed via `/tools/invoke` and dedicated API routes; `GetWebRaw/GetWeb` support selector/regex filtering to cut token cost, and `GetWeb` can auto-download large pages for local reads.
+```bash
+poecoder
+```
 
-- CLI supports `/balance` to read current Poe point balance.
-- CLI output uses live streamed events (`status`, `tool`, `delta`) for better readability.
-- Assistant output now renders basic Markdown (headings/lists/inline code/code blocks) in colorful CUI style.
-- During response waits, CLI splits elapsed indicators by situation: `Thinking... (Ns elapsed)` for pre-first-token stream wait, and `Generating... (Ns elapsed)` for non-stream/direct waits.
-- Provider base URIs are configurable:
-  - `POECODER_POE_API_URL` (default `https://api.poe.com/bot/`)
-  - `POECODER_OPENAI_API_URL` (default `https://api.openai.com/v1`)
-  - `POECODER_OPENAI_MODELS` accepts comma-separated OpenAI model names and auto-normalizes to `openai/<model>`.
-  - `POECODER_SHOW_THINK_DETAILS` (`true`/`false`) sets default think-details output mode for new CLI sessions.
-  - Runtime update endpoints: `POST /providers/poe/base-url`, `POST /providers/openai/base-url`.
+In CLI:
+- normal prompt => conversation turn
+- `/arxiv <query>` => multi-agent workflow (`init -> search -> download -> done`)
 
-- Base main/subagent system prompts live in `poecoder/prompts.py`.
-- `StartSubAgent` supports `system_message_modifier` so the main model can shape subagent behavior safely.
-- New tool pair: `Output` + `Write` for mid-turn text processing from `text/context/memory/terminal` sources.
-- `RunShell` now returns ephemeral `terminal_id` values that can be consumed by `Output`/`Write` in the same turn.
-- `RunShell` accepts `session_id="current"` (or omitted `session_id`) and auto-corrects mistaken `term_*` IDs to the active session.
-- A compact `previous_turn_conclusion` (up to 1000 chars) is carried into the next turn by default for continuity.
-- Conversation continuity includes full `user_prompt_history` and `turn_conclusion_history` in context for multi-step project work.
-- Durable persistence is explicit: use context/memory/wiki tools when information must survive across turns.
-- During `@ask`, press `Esc` (or type `/cancel`) to cancel the current turn.
+## CUI mode
 
-- CLI i18n: set `POECODER_LANG=zh-cn` or run `poecoder --lang zh-cn` (you can also switch live with `/lang zh-cn`).
+Default `poecoder` now launches a curses CUI:
+- `F2` create/switch new session
+- `F5` reload session messages
+- `PgUp/PgDn` scroll history
+- `/help` for command list (`/models`, `/models full`, `/model`, `/stream`, `/agentinfo`, `/ask`, `/answer`, `/skipask`, `/secretssave`, `/secretsload`, `/new`, `/sessions`, `/switch`, `/arxiv`, `/exit`)
+- `Esc` during streaming sends cancel request for current agent; ask is shown as popup (not only chat line)
+- turn view now shows agent/runshell metrics, token totals, and estimated cost (when usage is available)
+- spawn/runshell actions carry short `progress` updates for clearer middle feedback
+- agent can emit `note` middle-feedback actions (plan/risk/next-step) without immediate execution
+- agent can now define and call reusable runtime tools (`define_tool` / `call_tool`, sh or python)
+- defined tools are attached into model context each step (tool catalog with schema + script preview)
+- non-final actions should include short `progress` text for middle feedback in stream UI
+- ask flow supports clarification prompts with text/single/multiple-choice answers (`/ask`, `/answer`, `/skipask`)
+- unknown slash input is treated as command error (not forwarded to LLM prompt)
+- root agent follows a spawn-first policy (direct first-step `runshell` should include `no_spawn_reason`)
 
-- Background tasks: `/bgturn`, `/bgsubagent`, `/tasks`, `/task`, `/canceltask`.
-- Task output shortcuts: `/readtaskoutput <task_id>` and API `GET /tasks/{task_id}/output`.
-- Model tools now support async task orchestration: `StartBackgroundTurn`, `StartBackgroundSubAgent`, `ReadTaskOutput`.
-- Leader orchestration mode: `/mode leader`, `/leader`, `/leaderstatus`, `/leaderjobs`, `/leaderwait`, `/leadercancel`.
-- Leader API endpoints: `/leader/start`, `/leader/{run_id}`, `/leader/{run_id}/jobs`, `/leader/{run_id}/wait`, `/leader/{run_id}/cancel`.
-- Leader mode enforces scoped parallel jobs with explicit ownership and non-interference guidance per subtask.
-- `GET /tools/catalog` exposes the command/tool reference so the model can follow exact command names and args.
-- Tool `Help` provides per-tool usage guidance (`Help(tool_name)`) for complex commands.
-- Turn protocol supports model-driven clarification via `@ask {"prompt":"...","key":"..."}` with inline CLI answer input and automatic continuation.
-- Context selection is relevance-ranked + compacted by default to reduce token waste while keeping important session context.
-- Session titles are auto-derived from model conclusions after successful turns, then shown in session listings for quick resume.
-- Turn streaming now uses model chunk streaming for lower latency (`delta` events are emitted as chunks arrive).
-- GitHub Actions: CI runs tests on pushes/PRs to `main`; release workflow builds/tests and publishes GitHub Releases on `v*` tags.
+Fallback plain mode:
+
+```bash
+poecoder --mode simple
+```
