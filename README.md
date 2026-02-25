@@ -1,6 +1,6 @@
 # PoeCoder AgentCore
 
-Version tag: `v§-a0.0.2`
+Version tag: `v0.0.3`
 
 This branch is a full rewrite to an **agent-driven backend**:
 - Agent is core.
@@ -86,18 +86,26 @@ In CLI:
 Default `poecoder` now launches a curses CUI:
 - `F2` create/switch new session
 - `F5` reload session messages
+- `F6` toggle progress density (`compact`/`verbose`)
 - `PgUp/PgDn` scroll history
-- `/help` for command list (`/models`, `/models full`, `/model`, `/stream`, `/agentinfo`, `/ask`, `/answer`, `/skipask`, `/secretssave`, `/secretsload`, `/new`, `/sessions`, `/switch`, `/arxiv`, `/exit`)
+- `Up/Down` recall typed input history
+- `Tab` completes slash commands
+- `/help` for command list (`/models`, `/models full`, `/model`, `/stream`, `/progress`, `/runshell`, `/llm`, `/agentinfo`, `/ask`, `/answer`, `/skipask`, `/secretssave`, `/secretsload`, `/new`, `/sessions`, `/switch`, `/arxiv`, `/exit`)
+- `/progress [compact|verbose]` controls streaming feedback density
+- `/runshell <command>` executes shell directly without an LLM turn
+- `/llm [on|off]` toggles LLM prompt turns (default: off in CUI)
+- long-running shell/tool operations emit immediate "in progress" notes before completion
+- live panel includes `Cmd Viz` showing command state (`>` running, `+` success, `!` error, `x` blocked)
 - `Esc` during streaming sends cancel request for current agent; ask is shown as popup (not only chat line)
 - turn view now shows agent/runshell metrics, token totals, and estimated cost (when usage is available)
+- `/secretssave` and `/secretsload` without args now prompt for masked key input (no key echo in chat)
 - spawn/runshell actions carry short `progress` updates for clearer middle feedback
-- agent can emit `note` middle-feedback actions (plan/risk/next-step) without immediate execution
+- agent `note` actions are rendered directly as assistant feedback (not only operation-log progress lines)
 - agent can now define and call reusable runtime tools (`define_tool` / `call_tool`, sh or python)
 - defined tools are attached into model context each step (tool catalog with schema + script preview)
 - non-final actions should include short `progress` text for middle feedback in stream UI
 - ask flow supports clarification prompts with text/single/multiple-choice answers (`/ask`, `/answer`, `/skipask`)
 - unknown slash input is treated as command error (not forwarded to LLM prompt)
-- root agent follows a spawn-first policy (direct first-step `runshell` should include `no_spawn_reason`)
 
 Fallback plain mode:
 

@@ -12,6 +12,32 @@ from typing import Any
 
 import httpx
 
+SLASH_COMMANDS = [
+    "/help",
+    "/new",
+    "/sessions",
+    "/switch",
+    "/models",
+    "/model",
+    "/stream",
+    "/progress",
+    "/runshell",
+    "/llm",
+    "/agentinfo",
+    "/ask",
+    "/answer",
+    "/skipask",
+    "/authpoe",
+    "/authopenai",
+    "/secretssave",
+    "/secretsload",
+    "/arxiv",
+    "/exit",
+]
+
+SENSITIVE_COMMANDS = {"/secretssave", "/secretsload", "/authpoe", "/authopenai"}
+RISK_WORDS = ("risk", "block", "error", "fail", "warning", "unsafe")
+
 
 @dataclass(slots=True)
 class ApiClient:
@@ -123,6 +149,12 @@ class ApiClient:
     def load_secrets(self, user_key: str) -> dict[str, Any]:
         return self._post("/auth/secrets/load", {"user_key": user_key})
 
+    def run_shell(self, command: str, cwd: str = ".", timeout_s: int = 60, danger_ack: bool = False) -> dict[str, Any]:
+        return self._post(
+            "/run-shell",
+            {"command": command, "cwd": cwd, "timeout_s": timeout_s, "danger_ack": danger_ack},
+        )
+
     def _get(self, path: str) -> dict[str, Any]:
         resp = self._client.get(f"{self.api}{path}")
         resp.raise_for_status()
@@ -146,13 +178,25 @@ class CUIApp:
     version: str = ""
     current_model: str = "auto"
     stream_mode: bool = True
+    llm_enabled: bool = False
+    progress_mode: str = "compact"
     last_agent_id: str = ""
     running: bool = True
     scroll: int = 0
     stream_events_seen: int = 0
     _last_progress_signature: str = ""
+    _last_progress_phase: str = ""
+    live_phase: str = "-"
+    live_headline: str = "-"
+    live_alert: str = "-"
+    command_viz: list[dict[str, str]] = field(default_factory=list)
     pending_ask: dict[str, Any] | None = None
     stream_inflight: bool = False
+    input_history: list[str] = field(default_factory=list)
+    history_index: int | None = None
+    history_draft: str = ""
+    secret_prompt_action: str | None = None
+    secret_input_buffer: str = ""
     popup_visible: bool = False
     popup_title: str = ""
     popup_lines: list[str] = field(default_factory=list)
@@ -225,8 +269,9 @@ class CUIApp:
             self.session_id = str(created.get("id", ""))
             self._push_message(
                 "system",
-                "CUI ready. Commands: /help /new /sessions /switch /models /model /stream /agentinfo /ask /answer /skipask /authpoe /authopenai /secretssave /secretsload /arxiv /exit",
+                "CUI ready. Commands: /help /new /sessions /switch /models /model /stream /progress /runshell /llm /agentinfo /ask /answer /skipask /authpoe /authopenai /secretssave /secretsload /arxiv /exit",
             )
+            self._push_message("system", "LLM mode is off by default. Use /llm on to enable prompt-based agent turns.")
             self._set_status("Connected")
         except Exception as exc:  # noqa: BLE001
             self._push_message("system", f"Bootstrap failed: {exc}")
@@ -256,6 +301,9 @@ class CUIApp:
         self.scroll = 0
 
     def _handle_key(self, key: Any) -> None:
+        if self.secret_prompt_action:
+            self._handle_secret_prompt_key(key)
+            return
         if key in (27, "\x1b"):
             if self.popup_visible:
                 self._close_popup()
@@ -267,14 +315,18 @@ class CUIApp:
 
         if key == curses.KEY_RESIZE:
             return
+        if key in ("\t", 9):
+            self._apply_tab_completion()
+            return
         if key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+            self._reset_history_browse_on_edit()
             self.input_buffer = self.input_buffer[:-1]
             return
         if key == curses.KEY_UP:
-            self.scroll += 1
+            self._history_prev()
             return
         if key == curses.KEY_DOWN:
-            self.scroll = max(0, self.scroll - 1)
+            self._history_next()
             return
         if key == curses.KEY_PPAGE:
             self.scroll += 10
@@ -288,15 +340,154 @@ class CUIApp:
         if key == curses.KEY_F5:
             self._reload_messages()
             return
+        if key == curses.KEY_F6:
+            self._toggle_progress_mode()
+            return
 
         if isinstance(key, str) and key.isprintable():
+            self._reset_history_browse_on_edit()
             self.input_buffer += key
+
+    def _handle_secret_prompt_key(self, key: Any) -> None:
+        if key in (27, "\x1b"):
+            self._cancel_secret_prompt()
+            return
+        if key in ("\n", "\r"):
+            self._submit_secret_prompt()
+            return
+        if key == curses.KEY_RESIZE:
+            return
+        if key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+            self.secret_input_buffer = self.secret_input_buffer[:-1]
+            return
+        if isinstance(key, str) and key.isprintable():
+            self.secret_input_buffer += key
+
+    def _reset_history_browse_on_edit(self) -> None:
+        if self.history_index is None:
+            return
+        self.history_index = None
+        self.history_draft = ""
+
+    def _history_prev(self) -> None:
+        if not self.input_history:
+            return
+        if self.history_index is None:
+            self.history_draft = self.input_buffer
+            self.history_index = len(self.input_history) - 1
+        elif self.history_index > 0:
+            self.history_index -= 1
+        self.input_buffer = self.input_history[self.history_index]
+
+    def _history_next(self) -> None:
+        if self.history_index is None:
+            return
+        if self.history_index < len(self.input_history) - 1:
+            self.history_index += 1
+            self.input_buffer = self.input_history[self.history_index]
+            return
+        self.history_index = None
+        self.input_buffer = self.history_draft
+        self.history_draft = ""
+
+    def _apply_tab_completion(self) -> None:
+        current = self.input_buffer
+        if not current.startswith("/"):
+            return
+        candidates = self._completion_candidates(current)
+        if not candidates:
+            return
+        if len(candidates) == 1:
+            self.input_buffer = candidates[0]
+            return
+        prefix = self._longest_common_prefix(candidates)
+        if len(prefix) > len(current):
+            self.input_buffer = prefix
+        shown = ", ".join(candidates[:5])
+        if len(candidates) > 5:
+            shown += ", ..."
+        self._set_status(f"Completions: {shown}")
+
+    def _completion_candidates(self, current: str) -> list[str]:
+        raw = current.lstrip()
+        if not raw.startswith("/"):
+            return []
+        if " " not in raw:
+            prefix = raw.strip()
+            return [cmd for cmd in SLASH_COMMANDS if cmd.startswith(prefix)]
+
+        cmd, rest = raw.split(" ", 1)
+        rest = rest.strip()
+        if cmd == "/stream":
+            options = ["on", "off"]
+            if not rest:
+                return [f"/stream {item}" for item in options]
+            return [f"/stream {item}" for item in options if item.startswith(rest)]
+        if cmd == "/progress":
+            options = ["compact", "verbose"]
+            if not rest:
+                return [f"/progress {item}" for item in options]
+            return [f"/progress {item}" for item in options if item.startswith(rest)]
+        if cmd == "/llm":
+            options = ["on", "off"]
+            if not rest:
+                return [f"/llm {item}" for item in options]
+            return [f"/llm {item}" for item in options if item.startswith(rest)]
+        if cmd == "/models":
+            option = "full"
+            if not rest:
+                return ["/models full"]
+            if option.startswith(rest):
+                return ["/models full"]
+        return []
+
+    @staticmethod
+    def _longest_common_prefix(values: list[str]) -> str:
+        if not values:
+            return ""
+        prefix = values[0]
+        for item in values[1:]:
+            while not item.startswith(prefix):
+                prefix = prefix[:-1]
+                if not prefix:
+                    return ""
+        return prefix
+
+    def _record_input_history(self, raw_text: str) -> None:
+        safe = self._sanitize_history_input(raw_text)
+        if not safe:
+            return
+        if self.input_history and self.input_history[-1] == safe:
+            return
+        self.input_history.append(safe)
+        if len(self.input_history) > 200:
+            self.input_history = self.input_history[-200:]
+
+    def _sanitize_history_input(self, raw_text: str) -> str:
+        text = raw_text.strip()
+        if not text:
+            return ""
+        lower = text.lower()
+        for command in SENSITIVE_COMMANDS:
+            if lower == command:
+                return text
+            if lower.startswith(command + " "):
+                return f"{command} [REDACTED]"
+        return text
+
+    def _toggle_progress_mode(self) -> None:
+        self.progress_mode = "verbose" if self.progress_mode == "compact" else "compact"
+        self._push_message("system", f"progress mode: {self.progress_mode}")
+        self._set_status("Progress mode updated")
 
     def _submit_input(self) -> None:
         text = self.input_buffer.strip()
         self.input_buffer = ""
+        self.history_index = None
+        self.history_draft = ""
         if not text:
             return
+        self._record_input_history(text)
         if text in {"/exit", "/quit"}:
             self.running = False
             return
@@ -312,16 +503,20 @@ class CUIApp:
                     "/models full [query] - fetch full model list (includes OpenAI remote)\n"
                     "/model [name] - show or change model for turns\n"
                     "/stream [on|off] - toggle turn event streaming\n"
+                    "/progress [compact|verbose] - control live feedback density\n"
+                    "/runshell <command> - run shell command directly (no LLM)\n"
+                    "/llm [on|off] - toggle LLM turn execution for normal prompts\n"
                     "/agentinfo [agent_id] - show runshell/actions/cost info\n"
                     "/ask - show pending clarification request\n"
                     "/answer <text or option ids> - answer pending clarification\n"
                     "/skipask - clear pending clarification request\n"
                     "/authpoe <api_key> - set Poe API key\n"
                     "/authopenai <api_key> - set OpenAI API key\n"
-                    "/secretssave <user_key> - save current keys to encrypted file\n"
-                    "/secretsload <user_key> - load keys from encrypted file\n"
+                    "/secretssave [user_key] - save keys (no arg => masked prompt)\n"
+                    "/secretsload [user_key] - load keys (no arg => masked prompt)\n"
                     "/arxiv <query> - run multi-agent arxiv workflow\n"
-                    "Keys: Esc stop stream/close popup, F2 new session, F5 reload, PgUp/PgDn scroll"
+                    "Keys: Esc stop stream/close popup, F2 new session, F5 reload, F6 progress mode, "
+                    "PgUp/PgDn scroll, Up/Down input history, Tab command completion"
                 ),
             )
             return
@@ -359,6 +554,24 @@ class CUIApp:
         if text.startswith("/stream "):
             self._command_stream_mode(text.split(" ", 1)[1].strip())
             return
+        if text == "/progress":
+            self._push_message("system", f"progress mode: {self.progress_mode}")
+            return
+        if text.startswith("/progress "):
+            self._command_progress_mode(text.split(" ", 1)[1].strip())
+            return
+        if text == "/runshell":
+            self._push_message("system", "Usage: /runshell <command>")
+            return
+        if text.startswith("/runshell "):
+            self._command_runshell(text.split(" ", 1)[1].strip())
+            return
+        if text == "/llm":
+            self._push_message("system", f"llm mode: {'on' if self.llm_enabled else 'off'}")
+            return
+        if text.startswith("/llm "):
+            self._command_llm_mode(text.split(" ", 1)[1].strip())
+            return
         if text == "/agentinfo":
             self._command_agent_info(self.last_agent_id)
             return
@@ -385,8 +598,14 @@ class CUIApp:
         if text.startswith("/authopenai "):
             self._command_auth_openai(text.split(" ", 1)[1].strip())
             return
+        if text == "/secretssave":
+            self._start_secret_prompt("save")
+            return
         if text.startswith("/secretssave "):
             self._command_secrets_save(text.split(" ", 1)[1].strip())
+            return
+        if text == "/secretsload":
+            self._start_secret_prompt("load")
             return
         if text.startswith("/secretsload "):
             self._command_secrets_load(text.split(" ", 1)[1].strip())
@@ -400,6 +619,9 @@ class CUIApp:
         if self.pending_ask is not None:
             self._handle_pending_ask_input(text)
             return
+        if not self.llm_enabled:
+            self._push_message("system", "LLM mode is off. Use /llm on or run commands via /runshell.")
+            return
 
         self._execute_turn(text, user_visible=text)
 
@@ -412,7 +634,14 @@ class CUIApp:
             self.last_agent_id = ""
             self.stream_events_seen = 0
             self._last_progress_signature = ""
+            self._last_progress_phase = ""
+            self.live_phase = "-"
+            self.live_headline = "-"
+            self.live_alert = "-"
+            self.command_viz = []
             self.pending_ask = None
+            self.secret_prompt_action = None
+            self.secret_input_buffer = ""
             self._close_popup()
             self.messages.clear()
             self._push_message("system", f"Switched to session {self.session_id}")
@@ -517,6 +746,107 @@ class CUIApp:
             self._push_message("system", "stream mode: off")
             return
         self._push_message("system", "Usage: /stream <on|off>")
+
+    def _command_progress_mode(self, value: str) -> None:
+        clean = value.strip().lower()
+        if clean in {"compact", "verbose"}:
+            self.progress_mode = clean
+            self._push_message("system", f"progress mode: {self.progress_mode}")
+            self._set_status("Progress mode updated")
+            return
+        self._push_message("system", "Usage: /progress <compact|verbose>")
+
+    def _command_llm_mode(self, value: str) -> None:
+        clean = value.strip().lower()
+        if clean in {"on", "1", "true"}:
+            self.llm_enabled = True
+            self._push_message("system", "llm mode: on")
+            self._set_status("LLM enabled")
+            return
+        if clean in {"off", "0", "false"}:
+            self.llm_enabled = False
+            self._push_message("system", "llm mode: off")
+            self._set_status("LLM disabled")
+            return
+        self._push_message("system", "Usage: /llm <on|off>")
+
+    def _command_runshell(self, raw_command: str) -> None:
+        command = raw_command.strip()
+        if not command:
+            self._push_message("system", "Usage: /runshell <command>")
+            return
+        self._push_message("user", f"/runshell {command}")
+        self._push_message("assistant", f"Proceeding: {command[:140]}")
+        self._viz_start_command(command=command, source="shell")
+        self._set_status("Running shell command...")
+        self._render()
+        try:
+            payload = self.api.run_shell(command=command, cwd=".", timeout_s=120)
+            allowed = bool(payload.get("allowed", False))
+            exit_code = payload.get("exit_code")
+            duration_ms = int(payload.get("duration_ms", 0) or 0)
+            self._viz_finish_command(
+                command=command,
+                source="shell",
+                exit_code=exit_code,
+                allowed=allowed,
+                duration_ms=duration_ms,
+            )
+            if not allowed:
+                blocked_reason = str(payload.get("blocked_reason", "")).strip() or "blocked"
+                self._push_message("system", f"[runshell] blocked: {blocked_reason}")
+                self._set_status("Shell blocked")
+                return
+            lines = [f"[runshell] exit={exit_code} duration_ms={duration_ms}"]
+            stdout_lines = self._preview_lines_from_event(payload.get("stdout"))
+            stderr_lines = self._preview_lines_from_event(payload.get("stderr"))
+            for line in stdout_lines:
+                lines.append(f"[out] {line}")
+            for line in stderr_lines:
+                lines.append(f"[err] {line}")
+            self._push_message("system", "\n".join(lines))
+            self._set_status("Shell command finished")
+        except Exception as exc:  # noqa: BLE001
+            self._push_message("system", f"runshell failed: {exc}")
+            self._set_status("Shell error")
+
+    def _start_secret_prompt(self, action: str) -> None:
+        if action not in {"save", "load"}:
+            return
+        self.secret_prompt_action = action
+        self.secret_input_buffer = ""
+        verb = "save secrets" if action == "save" else "load secrets"
+        self._open_popup(
+            "Secure Key Input",
+            [
+                f"Enter user key to {verb}.",
+                "Input is masked and never shown in chat history.",
+                "Press Enter to submit, Esc to cancel.",
+            ],
+        )
+        self._set_status("Waiting for masked secret input...")
+
+    def _cancel_secret_prompt(self) -> None:
+        self.secret_prompt_action = None
+        self.secret_input_buffer = ""
+        self._close_popup()
+        self._set_status("Secret input canceled")
+
+    def _submit_secret_prompt(self) -> None:
+        action = self.secret_prompt_action
+        secret = self.secret_input_buffer
+        if action is None:
+            return
+        if not secret.strip():
+            self._push_message("system", "Secret key cannot be empty.")
+            return
+        self.secret_prompt_action = None
+        self.secret_input_buffer = ""
+        self._close_popup()
+        if action == "save":
+            self._command_secrets_save(secret)
+        else:
+            self._command_secrets_load(secret)
 
     def _command_agent_info(self, agent_id: str) -> None:
         target = agent_id.strip()
@@ -669,6 +999,7 @@ class CUIApp:
         allow_free = bool(ask_payload.get("allow_free_text", False))
         max_select = int(ask_payload.get("max_select", 1) or 1)
         lines.append(f"allow_free_text={allow_free} max_select={max_select}")
+        lines.append("answer format: index/id[,index]|optional free text")
         lines.append("reply with plain text, or /answer ...")
         return "\n".join(lines)
 
@@ -753,6 +1084,137 @@ class CUIApp:
             selected.append(hit)
         return selected
 
+    def _normalize_stream_feedback(self, event: str, data: dict[str, Any]) -> dict[str, str | bool]:
+        severity = "INFO"
+        phase = "PLAN"
+        headline = ""
+        detail = ""
+        next_hint = ""
+        milestone = False
+
+        if event == "started":
+            phase = "INIT"
+            agent = str(data.get("agent_id", "")).strip()
+            headline = f"Agent started {agent[:12]}".strip()
+            milestone = True
+        elif event == "action":
+            action = str(data.get("action", "")).strip().lower() or "unknown"
+            step = data.get("step")
+            progress = str(data.get("progress", "")).strip()
+            detail = str(data.get("detail", "")).strip()
+            next_hint = str(data.get("next", "")).strip()
+            if action == "ask":
+                phase = "ASK"
+                milestone = True
+                headline = "Clarification requested"
+                question = str(data.get("question", "")).strip()
+                if question and not detail:
+                    detail = question
+            else:
+                phase = "PLAN"
+                step_text = f"Step {step}" if step is not None else "Step"
+                headline = f"{step_text} action={action}"
+            if progress:
+                headline = f"{headline} | {progress}"
+        elif event == "runshell":
+            phase = "EXEC"
+            progress = str(data.get("progress", "")).strip()
+            command = str(data.get("command", "")).strip()
+            exit_code = data.get("exit_code")
+            allowed = bool(data.get("allowed", True))
+            if (isinstance(exit_code, int) and exit_code != 0) or not allowed:
+                severity = "WARN"
+            headline = f"runshell exit={exit_code} allowed={allowed}"
+            if command:
+                headline += f" cmd={command[:80]}"
+            detail = progress
+        elif event == "spawn":
+            phase = "EXEC"
+            child = str(data.get("child_agent_id", "")).strip()
+            status = str(data.get("child_status", "")).strip() or "-"
+            progress = str(data.get("progress", "")).strip()
+            headline = f"spawn child={child[:12]} status={status}"
+            detail = progress
+        elif event == "ask":
+            phase = "ASK"
+            headline = "Clarification requested"
+            milestone = True
+        elif event == "note":
+            phase = "PLAN"
+            progress = str(data.get("progress", "")).strip()
+            detail = str(data.get("detail", "")).strip()
+            next_hint = str(data.get("next", "")).strip()
+            headline = progress or "Model note"
+            risk_text = " ".join([headline, detail, next_hint]).lower()
+            if any(word in risk_text for word in RISK_WORDS):
+                severity = "WARN"
+        elif event == "tool_define":
+            phase = "TOOL"
+            tool_name = str(data.get("tool_name", "")).strip() or "-"
+            language = str(data.get("language", "")).strip() or "-"
+            progress = str(data.get("progress", "")).strip()
+            headline = f"tool define {tool_name} ({language})"
+            detail = progress
+        elif event == "tool_call":
+            phase = "TOOL"
+            tool_name = str(data.get("tool_name", "")).strip() or "-"
+            exit_code = data.get("exit_code")
+            allowed = bool(data.get("allowed", True))
+            progress = str(data.get("progress", "")).strip()
+            headline = f"tool call {tool_name} exit={exit_code} allowed={allowed}"
+            detail = progress
+            if (isinstance(exit_code, int) and exit_code != 0) or not allowed:
+                severity = "WARN"
+        elif event == "final":
+            phase = "FINAL"
+            headline = f"final status={str(data.get('status', 'done')).strip() or 'done'}"
+            milestone = True
+        else:
+            return {}
+
+        headline = headline.strip() or event
+        return {
+            "severity": severity,
+            "phase": phase,
+            "headline": headline,
+            "detail": detail.strip(),
+            "next": next_hint.strip(),
+            "milestone": milestone,
+        }
+
+    def _emit_stream_feedback(self, event: str, data: dict[str, Any]) -> None:
+        normalized = self._normalize_stream_feedback(event, data)
+        if not normalized:
+            return
+        severity = str(normalized.get("severity", "INFO"))
+        phase = str(normalized.get("phase", "PLAN"))
+        headline = str(normalized.get("headline", "")).strip()
+        detail = str(normalized.get("detail", "")).strip()
+        next_hint = str(normalized.get("next", "")).strip()
+        signature = f"{severity}|{phase}|{headline}|{detail}|{next_hint}"
+        self.live_phase = phase
+        self.live_headline = headline or "-"
+        if severity in {"WARN", "ERROR"}:
+            self.live_alert = f"{severity}:{headline}"[:100]
+        if signature == self._last_progress_signature:
+            return
+        should_emit = self.progress_mode == "verbose"
+        if self.progress_mode == "compact":
+            should_emit = bool(normalized.get("milestone", False)) or severity in {"WARN", "ERROR"}
+            if phase != self._last_progress_phase:
+                should_emit = True
+        if not should_emit:
+            return
+        self._last_progress_signature = signature
+        self._last_progress_phase = phase
+        line = f"[P][{severity}][{phase}] {headline}"
+        if self.progress_mode == "verbose":
+            if detail:
+                line += f" | detail: {detail}"
+            if next_hint:
+                line += f" | next: {next_hint}"
+        self._push_message("assistant_progress", line)
+
     def _run_turn_stream(self, prompt: str) -> dict[str, Any]:
         if not self.session_id:
             raise ValueError("session is required")
@@ -764,6 +1226,10 @@ class CUIApp:
         self._render()
         self.stream_events_seen = 0
         self._last_progress_signature = ""
+        self._last_progress_phase = ""
+        self.live_phase = "INIT"
+        self.live_headline = "Connecting stream"
+        self.live_alert = "-"
         self.stream_inflight = True
         frame_q: queue.Queue[tuple[str, Any]] = queue.Queue()
 
@@ -808,101 +1274,81 @@ class CUIApp:
                         data = {}
                     if event == "started":
                         self.last_agent_id = str(data.get("agent_id", "")).strip()
-                        self._push_message("assistant_progress", f"[init] agent started: {self.last_agent_id[:12]}")
-                        self._set_status(f"agent={self.last_agent_id[:12]} streaming")
-                    elif event == "action":
-                        action = str(data.get("action", "")).strip()
-                        step = data.get("step")
-                        progress = str(data.get("progress", "")).strip()
-                        detail = str(data.get("detail", "")).strip()
-                        next_hint = str(data.get("next", "")).strip()
-                        question = str(data.get("question", "")).strip()
-                        cost = float(data.get("estimated_cost_usd", 0.0) or 0.0)
-                        mid = f"[step {step}] action={action}"
-                        if progress:
-                            mid += f" | progress: {progress}"
-                        if detail:
-                            mid += f" | detail: {detail}"
-                        if next_hint:
-                            mid += f" | next: {next_hint}"
-                        if action == "ask" and question:
-                            mid += f" | question: {question}"
-                        sign = f"{step}|{action}|{progress}|{detail}|{next_hint}|{question}"
-                        if sign != self._last_progress_signature:
-                            self._last_progress_signature = sign
-                            self._push_message("assistant_progress", mid)
-                        short = f"progress={progress}" if progress else ""
-                        self._set_status(f"step={step} action={action} {short} est_cost=${cost:.6f}")
-                    elif event == "runshell":
-                        cmd = str(data.get("command", "")).strip()
-                        exit_code = data.get("exit_code")
-                        progress = str(data.get("progress", "")).strip()
-                        desc = f"progress={progress}".strip()
-                        self._push_message("assistant_progress", f"[runshell] {desc} | exit={exit_code} | cmd={cmd}")
+                    if event not in {"ask", "note"}:
+                        self._emit_stream_feedback(event, data)
+                    if event == "runshell" and self.progress_mode == "verbose":
                         for line in self._preview_lines_from_event(data.get("stdout_preview")):
                             self._push_message("assistant_progress", f"    [out] {line}")
                         for line in self._preview_lines_from_event(data.get("stderr_preview")):
                             self._push_message("assistant_progress", f"    [err] {line}")
-                    elif event == "spawn":
-                        child = str(data.get("child_agent_id", "")).strip()
-                        status = str(data.get("child_status", "")).strip()
-                        progress = str(data.get("progress", "")).strip()
-                        child_summary = str(data.get("child_command_summary", "")).strip()
-                        self._push_message(
-                            "assistant_progress",
-                            f"[spawn] progress={progress} child={child[:12]} status={status}",
+                    if event == "runshell":
+                        self._viz_finish_command(
+                            command=str(data.get("command", "")),
+                            source="shell",
+                            exit_code=data.get("exit_code"),
+                            allowed=bool(data.get("allowed", True)),
+                            duration_ms=data.get("duration_ms"),
                         )
+                    elif event == "spawn" and self.progress_mode == "verbose":
+                        child_summary = str(data.get("child_command_summary", "")).strip()
                         if child_summary:
                             for line in child_summary.splitlines():
                                 clean = line.strip()
                                 if clean:
                                     self._push_message("assistant_progress", f"    [child-runshell] {clean}")
-                    elif event == "ask":
-                        self._set_pending_ask(data)
-                    elif event == "note":
-                        progress = str(data.get("progress", "")).strip()
-                        detail = str(data.get("detail", "")).strip()
-                        next_hint = str(data.get("next", "")).strip()
-                        text = f"[note] progress={progress}"
-                        if detail:
-                            text += f" | detail={detail}"
-                        if next_hint:
-                            text += f" | next={next_hint}"
-                        self._push_message("assistant_progress", text)
-                    elif event == "tool_define":
-                        tool_name = str(data.get("tool_name", "")).strip()
-                        language = str(data.get("language", "")).strip()
-                        progress = str(data.get("progress", "")).strip()
-                        self._push_message(
-                            "assistant_progress",
-                            f"[tool-define] name={tool_name} lang={language} progress={progress}",
-                        )
-                    elif event == "tool_call":
-                        tool_name = str(data.get("tool_name", "")).strip()
+                    elif event == "tool_call" and self.progress_mode == "verbose":
                         command = str(data.get("command", "")).strip()
-                        exit_code = data.get("exit_code")
-                        allowed = bool(data.get("allowed", True))
-                        progress = str(data.get("progress", "")).strip()
-                        self._push_message(
-                            "assistant_progress",
-                            f"[tool-call] tool={tool_name} progress={progress} exit={exit_code} allowed={allowed}",
-                        )
                         if command:
                             self._push_message("assistant_progress", f"    [tool-cmd] {command}")
                         for line in self._preview_lines_from_event(data.get("stdout_preview")):
                             self._push_message("assistant_progress", f"    [tool-out] {line}")
                         for line in self._preview_lines_from_event(data.get("stderr_preview")):
                             self._push_message("assistant_progress", f"    [tool-err] {line}")
+                    if event == "tool_call":
+                        self._viz_finish_command(
+                            command=str(data.get("command", "")),
+                            source="tool",
+                            exit_code=data.get("exit_code"),
+                            allowed=bool(data.get("allowed", True)),
+                            duration_ms=data.get("duration_ms"),
+                        )
+                    elif event == "ask":
+                        self.live_phase = "ASK"
+                        self.live_headline = "Clarification requested"
+                        self._push_message(
+                            "assistant_progress",
+                            "[P][INFO][ASK] Clarification requested (open popup or /ask; answer via text or /answer ...)",
+                        )
+                        self._set_pending_ask(data)
+                    elif event == "note":
+                        detail = str(data.get("detail", "")).strip()
+                        progress = str(data.get("progress", "")).strip()
+                        next_hint = str(data.get("next", "")).strip()
+                        self._viz_note_hint(detail=detail, progress=progress)
+                        note_text = detail or progress
+                        if next_hint:
+                            note_text = f"{note_text}\n\nNext: {next_hint}" if note_text else f"Next: {next_hint}"
+                        if note_text:
+                            self._push_message("assistant", note_text)
+                        self.live_phase = "PLAN"
+                        self.live_headline = (progress or detail or "note")[:120]
+                        self._set_status(f"PLAN | {self.live_headline[:80]}")
                     elif event == "final":
                         final_payload = data
                         output = str(data.get("output", "")).strip()
                         self._push_message("assistant", output or "(empty)")
                         self._emit_agent_metrics(data.get("agent_metrics", {}))
                         self._set_pending_ask(data.get("ask"))
-                        self._set_status(str(data.get("status", "done")))
+                    status_text = f"{self.live_phase} | {self.live_headline[:80]}"
+                    cost = data.get("estimated_cost_usd")
+                    if isinstance(cost, (int, float)) and float(cost) > 0:
+                        status_text += f" | est_cost=${float(cost):.6f}"
+                    self._set_status(status_text)
                     self._render()
 
                 if stream_err is not None:
+                    self.live_alert = "ERROR:stream failed"
+                    self._push_message("assistant_progress", f"[P][ERROR][CANCEL] stream failed: {stream_err}")
                     raise RuntimeError(f"stream failed: {stream_err}")
 
                 if stdscr is not None:
@@ -916,6 +1362,10 @@ class CUIApp:
                             try:
                                 self.api.cancel_agent(self.last_agent_id)
                                 self._push_message("system", f"Stop requested for agent {self.last_agent_id[:12]}.")
+                                self._push_message(
+                                    "assistant_progress",
+                                    "[P][INFO][CANCEL] Cancellation requested; waiting for final event",
+                                )
                                 self._open_popup(
                                     "Stopping Response",
                                     [
@@ -927,6 +1377,8 @@ class CUIApp:
                                 self._set_status("Stopping response...")
                             except Exception as exc:  # noqa: BLE001
                                 self._push_message("system", f"Stop failed: {exc}")
+                                self._push_message("assistant_progress", "[P][ERROR][CANCEL] Cancel request failed")
+                                self.live_alert = "ERROR:cancel failed"
                                 self._set_status("Stop failed")
                         else:
                             self._push_message("system", "Cannot stop yet: agent id not available.")
@@ -958,7 +1410,7 @@ class CUIApp:
         est_cost = float(payload.get("estimated_cost_usd", 0.0) or 0.0)
         lines = [
             (
-                f"[agent] actions={actions} runshell={runshell} spawn={spawn} "
+                f"[turn recap] actions={actions} runshell={runshell} spawn={spawn} "
                 f"ask={ask} note={note} tool_define={tool_define} tool_call={tool_call} "
                 f"total_tokens={total_tokens} est_cost_usd={est_cost:.6f}"
             )
@@ -1079,6 +1531,63 @@ class CUIApp:
             return [line.strip()[:220] for line in text.splitlines() if line.strip()][:3]
         return []
 
+    def _viz_start_command(self, *, command: str, source: str) -> None:
+        cmd = command.strip()
+        if not cmd:
+            return
+        self.command_viz.append(
+            {
+                "status": "RUN",
+                "source": source,
+                "command": cmd[:180],
+                "meta": "",
+            }
+        )
+        if len(self.command_viz) > 12:
+            self.command_viz = self.command_viz[-12:]
+
+    def _viz_finish_command(
+        self,
+        *,
+        command: str,
+        source: str,
+        exit_code: Any,
+        allowed: bool,
+        duration_ms: Any,
+    ) -> None:
+        cmd = command.strip()
+        if not cmd:
+            return
+        status = "OK"
+        if not allowed:
+            status = "BLOCK"
+        elif isinstance(exit_code, int) and exit_code != 0:
+            status = "ERR"
+        meta = f"exit={exit_code} {int(duration_ms or 0)}ms"
+        for row in reversed(self.command_viz):
+            if row.get("command", "") == cmd[:180] and row.get("status", "") == "RUN":
+                row["status"] = status
+                row["meta"] = meta
+                return
+        self.command_viz.append(
+            {
+                "status": status,
+                "source": source,
+                "command": cmd[:180],
+                "meta": meta,
+            }
+        )
+        if len(self.command_viz) > 12:
+            self.command_viz = self.command_viz[-12:]
+
+    def _viz_note_hint(self, *, detail: str, progress: str) -> None:
+        text = detail.strip()
+        if not text.lower().startswith("in progress:"):
+            return
+        command = text.split(":", 1)[1].strip()
+        source = "tool" if "tool" in progress.lower() else "shell"
+        self._viz_start_command(command=command, source=source)
+
     def _command_model(self, raw_model: str) -> None:
         model = raw_model.strip()
         if not model:
@@ -1121,7 +1630,7 @@ class CUIApp:
     def _command_secrets_save(self, user_key: str) -> None:
         key = user_key.strip()
         if not key:
-            self._push_message("system", "Usage: /secretssave <user_key>")
+            self._push_message("system", "Usage: /secretssave [user_key]")
             return
         self._set_status("Saving secrets...")
         self._render()
@@ -1130,13 +1639,13 @@ class CUIApp:
             self._push_message("system", f"Secrets saved: {payload.get('path', '')}")
             self._set_status("Secrets saved")
         except Exception as exc:  # noqa: BLE001
-            self._push_message("system", f"secretssave failed: {exc}")
+            self._push_message("system", f"secretssave failed: {self._redact_secret_text(str(exc), key)}")
             self._set_status("Error")
 
     def _command_secrets_load(self, user_key: str) -> None:
         key = user_key.strip()
         if not key:
-            self._push_message("system", "Usage: /secretsload <user_key>")
+            self._push_message("system", "Usage: /secretsload [user_key]")
             return
         self._set_status("Loading secrets...")
         self._render()
@@ -1150,8 +1659,14 @@ class CUIApp:
             self._push_message("system", msg)
             self._set_status("Secrets loaded")
         except Exception as exc:  # noqa: BLE001
-            self._push_message("system", f"secretsload failed: {exc}")
+            self._push_message("system", f"secretsload failed: {self._redact_secret_text(str(exc), key)}")
             self._set_status("Error")
+
+    @staticmethod
+    def _redact_secret_text(text: str, secret: str) -> str:
+        if not secret:
+            return text
+        return text.replace(secret, "[REDACTED]")
 
     def _command_arxiv(self, query: str) -> None:
         if not query:
@@ -1204,8 +1719,10 @@ class CUIApp:
         header_attr = curses.color_pair(1) | curses.A_BOLD if self._colors_enabled else curses.A_REVERSE
         self._draw_line(0, header, header_attr)
         sub = (
-            f"stream={'on' if self.stream_mode else 'off'} | last_agent={self.last_agent_id[:12] or '-'} "
-            f"| events={self.stream_events_seen} | pending_ask={'yes' if self.pending_ask else 'no'} | F2 new | F5 reload | /help"
+            f"llm={'on' if self.llm_enabled else 'off'} | stream={'on' if self.stream_mode else 'off'} "
+            f"| last_agent={self.last_agent_id[:12] or '-'} "
+            f"| progress={self.progress_mode} | events={self.stream_events_seen} "
+            f"| pending_ask={'yes' if self.pending_ask else 'no'} | F2 new | F5 reload | F6 progress | /help"
         )
         self._draw_line(1, sub, curses.A_DIM)
 
@@ -1239,7 +1756,10 @@ class CUIApp:
                 sy += 1
 
         self._draw_line(h - 2, self.status[: max(1, w - 1)], curses.A_DIM)
-        prompt = f"> {self.input_buffer}"
+        if self.secret_prompt_action:
+            prompt = f"> [secret:{self.secret_prompt_action}] {'*' * len(self.secret_input_buffer)}"
+        else:
+            prompt = f"> {self.input_buffer}"
         self._draw_line(h - 1, prompt[: max(1, w - 1)], curses.A_BOLD)
         try:
             stdscr.move(h - 1, min(len(prompt), w - 2))
@@ -1291,29 +1811,58 @@ class CUIApp:
         push = lambda text, attr=base_attr: out.append((text[: max(1, width)], attr))
         push(f"session: {self.session_id[:18] or '-'}")
         push(f"model: {self.current_model}")
+        push(f"llm: {'on' if self.llm_enabled else 'off'}")
         push(f"stream: {'on' if self.stream_mode else 'off'}")
+        push(f"progress: {self.progress_mode}")
         push(f"last agent: {self.last_agent_id[:18] or '-'}")
         push(f"events: {self.stream_events_seen}")
+        push(f"phase: {self.live_phase}")
+        push(f"headline: {self.live_headline[:18]}")
+        if self.live_alert != "-":
+            push(f"alert: {self.live_alert[:18]}", strong_attr)
         if self.pending_ask:
             ask_mode = str(self.pending_ask.get("input_mode", "text"))
             push(f"pending ask: {ask_mode}", strong_attr)
         else:
             push("pending ask: none")
         push("")
+        push("Cmd Viz", strong_attr)
+        if self.command_viz:
+            for row in self.command_viz[-3:]:
+                status = str(row.get("status", "?"))
+                mark = ">"
+                if status == "OK":
+                    mark = "+"
+                elif status == "ERR":
+                    mark = "!"
+                elif status == "BLOCK":
+                    mark = "x"
+                source = str(row.get("source", "cmd"))[:1]
+                command = str(row.get("command", "")).strip()
+                meta = str(row.get("meta", "")).strip()
+                push(f"{mark} [{source}] {command[:14]}")
+                if meta:
+                    push(f"  {meta[:16]}")
+        else:
+            push("no commands yet")
+        push("")
         push("Quick Cmds", strong_attr)
         push("/models full gpt")
         push("/model openai/gpt-5")
         push("/stream on|off")
+        push("/progress compact")
+        push("/llm on|off")
+        push("/runshell <cmd>")
         push("/agentinfo")
         push("/ask")
         push("/answer ...")
-        push("/secretssave <key>")
-        push("/secretsload <key>")
+        push("/secretssave")
+        push("/secretsload")
         if len(out) < max_lines:
             push("")
             push("Tip", strong_attr)
-            push("Progress lines [P] are")
-            push("LLM middle feedback.")
+            push("Tab completes commands")
+            push("Up/Down recalls input")
             push("Esc stops streaming")
         return out
 
@@ -1362,7 +1911,7 @@ class CUIApp:
             for idx, line in enumerate(lines[:body_h], start=1):
                 win.addnstr(idx, 2, line, max(1, popup_w - 4), curses.A_NORMAL)
             if popup_h >= 3:
-                footer = "Esc close"
+                footer = "Esc cancel" if self.secret_prompt_action else "Esc close"
                 win.addnstr(popup_h - 2, max(2, popup_w - len(footer) - 2), footer, len(footer), curses.A_DIM)
             win.noutrefresh()
         except curses.error:

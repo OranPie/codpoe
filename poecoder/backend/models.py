@@ -71,7 +71,7 @@ class AgentStartRequest(BaseModel):
     template_name: str | None = None
     scope: list[str] = Field(default_factory=lambda: ["."])
     expected_output_schema: dict[str, Any] = Field(default_factory=dict)
-    max_steps: int = Field(default=6, ge=1, le=20)
+    max_steps: int = Field(default=50, ge=1)
 
 
 class AgentView(BaseModel):

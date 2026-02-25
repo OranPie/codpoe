@@ -53,7 +53,7 @@ class BackendEngine:
                 session_id=session_id,
                 model=req.model,
                 scope=["."],
-                max_steps=6,
+                max_steps=200,
             )
         )
         done = await self.runtime.wait(run.id)
@@ -338,7 +338,17 @@ class BackendEngine:
             elif et == "ask":
                 out.append("ask user clarification")
             elif et == "note":
-                out.append("note middle feedback")
+                note_payload = event.get("payload", {})
+                if isinstance(note_payload, dict):
+                    detail = str(note_payload.get("detail", "")).strip()
+                    progress = str(note_payload.get("progress", "")).strip()
+                    text = detail or progress
+                    if text:
+                        out.append(f"note: {text[:120]}")
+                    else:
+                        out.append("note")
+                else:
+                    out.append("note")
             elif et == "tool_define":
                 out.append("define reusable tool")
             elif et == "tool_call":

@@ -128,7 +128,21 @@ def test_agent_start_wait_get_and_events(client) -> None:
     assert events_resp.status_code == 200
     event_types = [item["event_type"] for item in events_resp.json()]
     assert "model_action" in event_types
+    assert "note" in event_types
     assert "runshell" in event_types
+
+
+def test_agent_start_allows_large_max_steps(client) -> None:
+    test_client, _state = client
+    created = test_client.post(
+        "/agent-api/agents/start",
+        json={"name": "many-steps", "goal": "finish quickly", "max_steps": 120},
+    )
+    assert created.status_code == 200
+    agent_id = created.json()["id"]
+    waited = test_client.post(f"/agent-api/agents/{agent_id}/wait", json={"timeout_s": 30})
+    assert waited.status_code == 200
+    assert waited.json()["agent"]["status"] == "completed"
 
 
 def test_agent_depth_cap(client) -> None:
@@ -389,6 +403,34 @@ def test_session_turn_note_middle_feedback(client) -> None:
     stream_text = test_client.post(f"/agent-api/sessions/{sid}/turn/stream", json={"prompt": "start"}).text
     assert "event: note" in stream_text
     assert '"detail": "Will inspect file list first, then summarize findings."' in stream_text
+
+
+def test_note_becomes_output_when_max_steps_hit(client) -> None:
+    test_client, state = client
+
+    def note_only_reply(**kwargs: Any) -> dict[str, Any]:
+        _ = kwargs
+        return {
+            "action": "note",
+            "progress": "analyzing",
+            "detail": "Need one more step to finish.",
+            "next": "rerun with larger max_steps",
+        }
+
+    state.runtime.model_client = StubModelClient(reply_fn=note_only_reply)
+    state.model_client = state.runtime.model_client  # type: ignore[assignment]
+
+    created = test_client.post(
+        "/agent-api/agents/start",
+        json={"name": "note-only", "goal": "note only", "max_steps": 1},
+    )
+    assert created.status_code == 200
+    agent_id = created.json()["id"]
+    waited = test_client.post(f"/agent-api/agents/{agent_id}/wait", json={"timeout_s": 30})
+    assert waited.status_code == 200
+    agent_payload = waited.json()["agent"]
+    assert agent_payload["status"] == "completed"
+    assert "Need one more step to finish." in str(agent_payload["final_output"])
 
 
 def test_cancel_agent_endpoint(client) -> None:

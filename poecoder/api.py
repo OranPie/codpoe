@@ -252,7 +252,7 @@ async def session_turn_stream(session_id: str, req: SessionTurnRequest) -> Strea
                 session_id=session_id,
                 model=req.model,
                 scope=["."],
-                max_steps=6,
+                max_steps=200,
             )
         )
         yield _sse("started", {"session_id": session_id, "agent_id": run.id})

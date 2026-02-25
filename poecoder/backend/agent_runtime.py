@@ -192,18 +192,6 @@ class AgentRuntime:
                 if kind == "runshell":
                     progress = str(action.get("progress", "")).strip()
                     no_spawn_reason = str(action.get("no_spawn_reason", "")).strip()
-                    # Soft policy guard: root agent should not jump into shell on first step
-                    # unless it explains why spawning is unnecessary.
-                    if view.depth == 0 and step == 1 and len(no_spawn_reason) < 8:
-                        warning = {
-                            "type": "runshell",
-                            "error": "spawn_first_policy_violation",
-                            "hint": "spawn a child agent first, or provide no_spawn_reason for single-command tasks",
-                            "progress": progress,
-                        }
-                        observations.append(warning)
-                        self.store.append_agent_event(view.id, "policy_warning", warning)
-                        continue
                     shell_req = RunShellRequest(
                         command=str(action.get("command", "")),
                         cwd=str(action.get("cwd", ".")),
@@ -219,6 +207,15 @@ class AgentRuntime:
                             }
                         )
                         continue
+                    self.store.append_agent_event(
+                        view.id,
+                        "note",
+                        {
+                            "progress": progress or "running shell command",
+                            "detail": f"in progress: {shell_req.command[:180]}",
+                            "next": "wait for command completion",
+                        },
+                    )
                     result = await self.shell.run(shell_req)
                     stdout_preview = self._preview_text_lines(result.stdout, max_lines=3)
                     stderr_preview = self._preview_text_lines(result.stderr, max_lines=3)
@@ -417,6 +414,15 @@ class AgentRuntime:
                         timeout_s=int(action.get("timeout_s", 60) or 60),
                         danger_ack=bool(action.get("danger_ack", False)),
                     )
+                    self.store.append_agent_event(
+                        view.id,
+                        "note",
+                        {
+                            "progress": progress or f"running tool {tool_name}",
+                            "detail": f"in progress: {command[:180]}",
+                            "next": "wait for tool completion",
+                        },
+                    )
                     result = await self.shell.run(shell_req)
                     stdout_preview = self._preview_text_lines(result.stdout, max_lines=3)
                     stderr_preview = self._preview_text_lines(result.stderr, max_lines=3)
@@ -453,7 +459,21 @@ class AgentRuntime:
                 return
 
             if not final_output:
-                final_output = (
+                note_text = ""
+                for item in reversed(observations):
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("type", "")) != "note":
+                        continue
+                    detail = str(item.get("detail", "")).strip()
+                    progress = str(item.get("progress", "")).strip()
+                    next_hint = str(item.get("next", "")).strip()
+                    note_text = detail or progress
+                    if next_hint:
+                        note_text = f"{note_text}\n\nNext: {next_hint}" if note_text else f"Next: {next_hint}"
+                    if note_text:
+                        break
+                final_output = note_text or (
                     "Agent reached max steps without final action. "
                     "Please refine goal or split into smaller child agents."
                 )
